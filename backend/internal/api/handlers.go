@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/your-org/platform-backend/internal/conversation"
 )
@@ -26,6 +27,9 @@ type SandboxManager interface {
 	ProvisionForConversation(ctx context.Context, conv *conversation.Conversation) error
 	// DeleteSandbox destroys the sandbox identified by sandboxID.
 	DeleteSandbox(ctx context.Context, sandboxID string) error
+	// IsSandboxAlive reports whether sandboxID is still in Running state.
+	// Returns (false, nil) when the sandbox has expired or been terminated.
+	IsSandboxAlive(ctx context.Context, sandboxID string) (bool, error)
 }
 
 // MessageProxy streams a prompt from the client through to the conversation's sandbox.
@@ -62,16 +66,14 @@ func NewHandler(store ConversationStore, mgr SandboxManager, proxy MessageProxy)
 //
 //	{ "id": "<conversation-id>" }
 func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Env map[string]string `json:"env"`
-	}
+	var body createConversationRequest
 	// body is optional — ignore decode errors
 	json.NewDecoder(r.Body).Decode(&body)
 
 	conv := h.store.Create(body.Env)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"id": conv.ID})
+	json.NewEncoder(w).Encode(createConversationResponse{ID: conv.ID})
 }
 
 // SendMessage handles POST /api/conversations/{id}/messages.
@@ -97,15 +99,32 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body struct {
-		Prompt string `json:"prompt"`
-	}
+	var body sendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Prompt == "" {
 		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
 
-	// Mark provisioning before entering Once to give callers visibility.
+	// Sandboxes expire silently via TTL. ResetIfExpired checks liveness under the
+	// provisioning lock so a concurrent re-provision cannot be stomped by a racing reset.
+	if err := conv.ResetIfExpired(func(sandboxID string) (bool, error) {
+		aliveCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		alive, err := h.manager.IsSandboxAlive(aliveCtx, sandboxID)
+		if err != nil {
+			log.Printf("sandbox status check failed for conv %s sandbox %s: %v", id, sandboxID, err)
+			return true, err // treat check error as alive — proxy will surface real errors
+		}
+		if !alive {
+			log.Printf("sandbox %s expired for conv %s, re-provisioning", sandboxID, id)
+		}
+		return alive, nil
+	}); err != nil {
+		// Liveness check failed transiently — proceed and let the proxy surface any error.
+		log.Printf("sandbox liveness check error for conv %s, proceeding: %v", id, err)
+	}
+
+	// Mark provisioning before entering the lock to give callers visibility.
 	if conv.GetState() == conversation.StateNew {
 		conv.SetProvisioning()
 	}
@@ -135,10 +154,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 // Response 200 JSON:
 //
 //	{
-//	  "id":             "<conversation-id>",
-//	  "sandboxState":   "<state-string>",
-//	  "sandboxId":      "<sandbox-id>",
-//	  "agentSessionId": "<session-id>"
+//	  "id":               "<conversation-id>",
+//	  "sandbox_state":    "<state-string>",
+//	  "sandbox_id":       "<sandbox-id>",
+//	  "agent_session_id": "<session-id>"
 //	}
 //
 // Errors:
@@ -153,11 +172,11 @@ func (h *Handler) GetConversation(w http.ResponseWriter, r *http.Request) {
 
 	_, sandboxID, agentSessionID, state := conv.Info()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"id":             id,
-		"sandboxState":   state.String(),
-		"sandboxId":      sandboxID,
-		"agentSessionId": agentSessionID,
+	json.NewEncoder(w).Encode(getConversationResponse{
+		ID:             id,
+		SandboxState:   state.String(),
+		SandboxID:      sandboxID,
+		AgentSessionID: agentSessionID,
 	})
 }
 
@@ -196,5 +215,5 @@ func (h *Handler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 //	{ "status": "ok" }
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(healthResponse{Status: "ok"})
 }

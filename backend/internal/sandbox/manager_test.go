@@ -462,6 +462,96 @@ func TestProvision_AgentPort(t *testing.T) {
 	}
 }
 
+// ---- IsSandboxAlive tests ----
+
+func TestIsSandboxAlive_Running(t *testing.T) {
+	lc := &mockLC{getResponses: []SandboxState{StateRunning}}
+	mgr := newTestManager(lc, "http://srv", "k", nil)
+
+	alive, err := mgr.IsSandboxAlive(context.Background(), "sb1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !alive {
+		t.Error("expected alive=true for Running sandbox")
+	}
+}
+
+func TestIsSandboxAlive_Terminated(t *testing.T) {
+	lc := &mockLC{getResponses: []SandboxState{StateTerminated}}
+	mgr := newTestManager(lc, "http://srv", "k", nil)
+
+	alive, err := mgr.IsSandboxAlive(context.Background(), "sb1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if alive {
+		t.Error("expected alive=false for Terminated sandbox")
+	}
+}
+
+func TestIsSandboxAlive_Failed(t *testing.T) {
+	lc := &mockLC{getResponses: []SandboxState{StateFailed}}
+	mgr := newTestManager(lc, "http://srv", "k", nil)
+
+	alive, err := mgr.IsSandboxAlive(context.Background(), "sb1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if alive {
+		t.Error("expected alive=false for Failed sandbox")
+	}
+}
+
+func TestIsSandboxAlive_NotFound(t *testing.T) {
+	lc := &mockLC{
+		getErr: &APIError{StatusCode: http.StatusNotFound, Response: ErrorResponse{Code: "NOT_FOUND", Message: "not found"}},
+	}
+	mgr := newTestManager(lc, "http://srv", "k", nil)
+
+	alive, err := mgr.IsSandboxAlive(context.Background(), "sb-gone")
+	if err != nil {
+		t.Fatalf("unexpected error for 404 (treated as expired): %v", err)
+	}
+	if alive {
+		t.Error("expected alive=false for 404 response")
+	}
+}
+
+func TestIsSandboxAlive_NonRunningStates(t *testing.T) {
+	// Per the lifecycle spec, only Running is usable for proxying; all other states
+	// must return alive=false.
+	for _, state := range []SandboxState{
+		StateTerminated, StateFailed, StateStopping,
+		StatePaused, StatePausing, StatePending,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			lc := &mockLC{getResponses: []SandboxState{state}}
+			mgr := newTestManager(lc, "http://srv", "k", nil)
+
+			alive, err := mgr.IsSandboxAlive(context.Background(), "sb1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if alive {
+				t.Errorf("expected alive=false for state %s", state)
+			}
+		})
+	}
+}
+
+func TestIsSandboxAlive_APIError(t *testing.T) {
+	lc := &mockLC{
+		getErr: &APIError{StatusCode: http.StatusInternalServerError, Response: ErrorResponse{Code: "INTERNAL_ERROR", Message: "server error"}},
+	}
+	mgr := newTestManager(lc, "http://srv", "k", nil)
+
+	_, err := mgr.IsSandboxAlive(context.Background(), "sb1")
+	if err == nil {
+		t.Fatal("expected error for 500 response, got nil")
+	}
+}
+
 func TestHTTPHealthChecker_HealthCheckURLPassedToChecker(t *testing.T) {
 	var capturedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

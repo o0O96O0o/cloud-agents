@@ -43,14 +43,20 @@ func (m *mockStore) Delete(_ string) {}
 type mockManager struct {
 	provisionErr error
 	calls        atomic.Int32
+	sandboxAlive bool
+	aliveErr     error
 }
 
-func (m *mockManager) ProvisionForConversation(_ context.Context, _ *conversation.Conversation) error {
+func (m *mockManager) ProvisionForConversation(_ context.Context, conv *conversation.Conversation) error {
 	m.calls.Add(1)
 	return m.provisionErr
 }
 
 func (m *mockManager) DeleteSandbox(_ context.Context, _ string) error { return nil }
+
+func (m *mockManager) IsSandboxAlive(_ context.Context, _ string) (bool, error) {
+	return m.sandboxAlive, m.aliveErr
+}
 
 type mockProxy struct {
 	err error
@@ -73,6 +79,18 @@ func convWithSandbox(sandboxID, sessionID string) *conversation.Conversation {
 	if sessionID != "" {
 		conv.SetAgentSessionID(sessionID)
 	}
+	return conv
+}
+
+// provisionedConv returns a conversation that went through EnsureProvisioned so
+// provisioned=true, simulating a session that was previously fully provisioned.
+func provisionedConv(sandboxID string) *conversation.Conversation {
+	s := conversation.NewStore()
+	conv := s.Create(nil)
+	conv.EnsureProvisioned(func() error {
+		conv.SetRunning(sandboxID, "http://proxy/", map[string]string{})
+		return nil
+	})
 	return conv
 }
 
@@ -148,14 +166,14 @@ func TestGetConversation_Found(t *testing.T) {
 	}
 	var body map[string]any
 	json.NewDecoder(rw.Body).Decode(&body)
-	if body["sandboxState"] != "running" {
-		t.Errorf("expected sandboxState=running, got %v", body["sandboxState"])
+	if body["sandbox_state"] != "running" {
+		t.Errorf("expected sandbox_state=running, got %v", body["sandbox_state"])
 	}
-	if body["sandboxId"] != "sb-1" {
-		t.Errorf("expected sandboxId=sb-1, got %v", body["sandboxId"])
+	if body["sandbox_id"] != "sb-1" {
+		t.Errorf("expected sandbox_id=sb-1, got %v", body["sandbox_id"])
 	}
-	if body["agentSessionId"] != "sess-1" {
-		t.Errorf("expected agentSessionId=sess-1, got %v", body["agentSessionId"])
+	if body["agent_session_id"] != "sess-1" {
+		t.Errorf("expected agent_session_id=sess-1, got %v", body["agent_session_id"])
 	}
 }
 
@@ -309,6 +327,72 @@ func TestSendMessage_ProvisionCalledOnce(t *testing.T) {
 	}
 }
 
+func TestSendMessage_SandboxAlive_NoReprovision(t *testing.T) {
+	conv := provisionedConv("sb-alive")
+	store := &mockStore{conv: conv}
+	mgr := &mockManager{sandboxAlive: true}
+	h := newHandler(store, mgr, &mockProxy{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conv.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	req.SetPathValue("id", conv.ID)
+	rw := httptest.NewRecorder()
+	h.SendMessage(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	if mgr.calls.Load() != 0 {
+		t.Errorf("expected no re-provisioning when sandbox is alive, got %d calls", mgr.calls.Load())
+	}
+}
+
+func TestSendMessage_SandboxExpired_Reprovisions(t *testing.T) {
+	conv := provisionedConv("sb-expired")
+	store := &mockStore{conv: conv}
+	// sandboxAlive=false simulates TTL expiry; provisioning succeeds.
+	mgr := &mockManager{sandboxAlive: false}
+	h := newHandler(store, mgr, &mockProxy{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conv.ID+"/messages",
+		strings.NewReader(`{"prompt":"hello after expiry"}`))
+	req.SetPathValue("id", conv.ID)
+	rw := httptest.NewRecorder()
+	h.SendMessage(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200 after re-provision, got %d", rw.Code)
+	}
+	if mgr.calls.Load() != 1 {
+		t.Errorf("expected ProvisionForConversation called once for re-provision, got %d", mgr.calls.Load())
+	}
+}
+
+func TestSendMessage_SandboxAliveCheckError_Continues(t *testing.T) {
+	conv := provisionedConv("sb-check-err")
+	store := &mockStore{conv: conv}
+	// aliveErr simulates a transient network error; state must be preserved and the
+	// existing proxy should be used (ResetIfExpired does not reset on check error).
+	mgr := &mockManager{sandboxAlive: false, aliveErr: errors.New("network timeout")}
+	h := newHandler(store, mgr, &mockProxy{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conv.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	req.SetPathValue("id", conv.ID)
+	rw := httptest.NewRecorder()
+	h.SendMessage(rw, req)
+
+	// Should proceed (not fail) — existing proxy URL is retained; it will surface errors
+	// if the sandbox is truly dead.
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200 when alive check errors, got %d", rw.Code)
+	}
+	// No re-provisioning — sandbox was not reset because the check was inconclusive.
+	if mgr.calls.Load() != 0 {
+		t.Errorf("expected no re-provisioning on alive check error, got %d calls", mgr.calls.Load())
+	}
+}
+
 // ---- DeleteConversation ----
 
 func TestDeleteConversation_NotFound(t *testing.T) {
@@ -378,6 +462,9 @@ func (m *deletingManager) DeleteSandbox(_ context.Context, id string) error {
 		m.onDelete(id)
 	}
 	return nil
+}
+func (m *deletingManager) IsSandboxAlive(_ context.Context, _ string) (bool, error) {
+	return true, nil
 }
 
 // ---- Health ----

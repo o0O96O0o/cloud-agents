@@ -111,7 +111,10 @@ func TestEnsureProvisioned_CalledOnce(t *testing.T) {
 	}
 }
 
-func TestEnsureProvisioned_ErrorPropagated(t *testing.T) {
+// TestEnsureProvisioned_FailedFnRetried verifies that when fn returns an error,
+// provisioned stays false and each subsequent caller retries fn independently.
+// This differs from sync.Once: errors are not cached — callers can retry.
+func TestEnsureProvisioned_FailedFnRetried(t *testing.T) {
 	s := NewStore()
 	conv := s.Create(nil)
 	want := errors.New("provision failed")
@@ -132,6 +135,174 @@ func TestEnsureProvisioned_ErrorPropagated(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Fatalf("goroutine %d: expected provision error, got %v", i, err)
 		}
+	}
+}
+
+func TestResetForReprovisioning_ClearsState(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+
+	// Fully provision the conversation.
+	if err := conv.EnsureProvisioned(func() error {
+		conv.SetRunning("sb-1", "http://proxy/", map[string]string{"k": "v"})
+		return nil
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	conv.SetAgentSessionID("sess-1")
+
+	if conv.GetState() != StateRunning {
+		t.Fatalf("expected StateRunning before reset, got %v", conv.GetState())
+	}
+
+	conv.ResetForReprovisioning()
+
+	if conv.GetState() != StateNew {
+		t.Errorf("expected StateNew after reset, got %v", conv.GetState())
+	}
+	if conv.GetSandboxID() != "" {
+		t.Errorf("expected empty sandboxID after reset, got %q", conv.GetSandboxID())
+	}
+	url, _ := conv.GetProxyInfo()
+	if url != "" {
+		t.Errorf("expected empty proxyBaseURL after reset, got %q", url)
+	}
+	if conv.GetAgentSessionID() != "" {
+		t.Errorf("expected empty agentSessionID after reset, got %q", conv.GetAgentSessionID())
+	}
+}
+
+func TestResetIfExpired_ResetsWhenNotAlive(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+	conv.EnsureProvisioned(func() error {
+		conv.SetRunning("sb-1", "http://proxy/", map[string]string{})
+		return nil
+	})
+
+	err := conv.ResetIfExpired(func(_ string) (bool, error) { return false, nil })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if conv.GetState() != StateNew {
+		t.Errorf("expected StateNew after expiry reset, got %v", conv.GetState())
+	}
+	if conv.GetSandboxID() != "" {
+		t.Errorf("expected empty sandboxID after expiry reset, got %q", conv.GetSandboxID())
+	}
+}
+
+func TestResetIfExpired_NoResetWhenAlive(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+	conv.EnsureProvisioned(func() error {
+		conv.SetRunning("sb-1", "http://proxy/", map[string]string{})
+		return nil
+	})
+
+	err := conv.ResetIfExpired(func(_ string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if conv.GetState() != StateRunning {
+		t.Errorf("expected StateRunning when sandbox is alive, got %v", conv.GetState())
+	}
+}
+
+func TestResetIfExpired_NoResetWhenNotProvisioned(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+	called := false
+
+	err := conv.ResetIfExpired(func(_ string) (bool, error) {
+		called = true
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// isAlive should not be called if the conversation was never provisioned.
+	if called {
+		t.Error("expected isAlive not called when conversation is unprovisioned")
+	}
+}
+
+func TestResetIfExpired_ErrorPreservesState(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+	conv.EnsureProvisioned(func() error {
+		conv.SetRunning("sb-1", "http://proxy/", map[string]string{})
+		return nil
+	})
+	want := errors.New("network timeout")
+
+	err := conv.ResetIfExpired(func(_ string) (bool, error) { return false, want })
+	if !errors.Is(err, want) {
+		t.Fatalf("expected error %v, got %v", want, err)
+	}
+	// State must be preserved — check error must not trigger a reset.
+	if conv.GetState() != StateRunning {
+		t.Errorf("expected StateRunning preserved on check error, got %v", conv.GetState())
+	}
+}
+
+func TestResetIfExpired_ConcurrentSafeOnlyResetsOnce(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+	conv.EnsureProvisioned(func() error {
+		conv.SetRunning("sb-expired", "http://proxy/", map[string]string{})
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	var resetCount atomic.Int32
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conv.ResetIfExpired(func(_ string) (bool, error) {
+				resetCount.Add(1)
+				return false, nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	// isAlive is called exactly once: the first caller resets (provisioned→false);
+	// all subsequent callers skip because provisioned is already false.
+	if resetCount.Load() != 1 {
+		t.Errorf("expected isAlive called exactly once, called %d times", resetCount.Load())
+	}
+}
+
+func TestResetForReprovisioning_AllowsReprovision(t *testing.T) {
+	s := NewStore()
+	conv := s.Create(nil)
+
+	var callCount atomic.Int32
+
+	// First provision.
+	conv.EnsureProvisioned(func() error {
+		callCount.Add(1)
+		conv.SetRunning("sb-1", "http://proxy/", map[string]string{})
+		return nil
+	})
+	if callCount.Load() != 1 {
+		t.Fatalf("expected fn called once, got %d", callCount.Load())
+	}
+
+	// Reset and re-provision.
+	conv.ResetForReprovisioning()
+	conv.EnsureProvisioned(func() error {
+		callCount.Add(1)
+		conv.SetRunning("sb-2", "http://proxy2/", map[string]string{})
+		return nil
+	})
+	if callCount.Load() != 2 {
+		t.Fatalf("expected fn called twice after reset, got %d", callCount.Load())
+	}
+	if conv.GetSandboxID() != "sb-2" {
+		t.Errorf("expected sandboxID=sb-2 after re-provision, got %q", conv.GetSandboxID())
 	}
 }
 

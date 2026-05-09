@@ -39,9 +39,9 @@ type Conversation struct {
 	agentSessionID string
 	extraEnv       map[string]string // per-request env vars merged into sandbox at provision time
 
-	// once ensures exactly one goroutine runs provisioning; others block until done.
-	once         sync.Once
-	provisionErr error
+	// provisionMu serialises provisioning and reset. Lock order: provisionMu → mu.
+	provisionMu sync.Mutex
+	provisioned bool
 }
 
 func (c *Conversation) GetState() State {
@@ -101,12 +101,65 @@ func (c *Conversation) ExtraEnv() map[string]string {
 	return c.extraEnv
 }
 
-// EnsureProvisioned calls fn exactly once. Concurrent callers block until fn returns.
+// EnsureProvisioned calls fn if not yet provisioned. Concurrent callers block until fn returns.
+// Unlike sync.Once, a failed fn leaves provisioned=false so the next caller retries.
 func (c *Conversation) EnsureProvisioned(fn func() error) error {
-	c.once.Do(func() {
-		c.provisionErr = fn()
-	})
-	return c.provisionErr
+	c.provisionMu.Lock()
+	defer c.provisionMu.Unlock()
+	if c.provisioned {
+		return nil
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	c.provisioned = true
+	return nil
+}
+
+// ResetForReprovisioning clears all sandbox state so a new sandbox can be allocated.
+// Call this when the previously assigned sandbox has expired or become unreachable.
+func (c *Conversation) ResetForReprovisioning() {
+	c.provisionMu.Lock()
+	defer c.provisionMu.Unlock()
+	c.resetLocked()
+}
+
+// ResetIfExpired atomically checks sandbox liveness and clears state if the sandbox
+// is no longer Running. isAlive is called while provisionMu is held, preventing a
+// concurrent re-provision from being stomped by a racing expiry reset. Returns the
+// error from isAlive, if any; on error the state is NOT reset.
+func (c *Conversation) ResetIfExpired(isAlive func(sandboxID string) (bool, error)) error {
+	c.provisionMu.Lock()
+	defer c.provisionMu.Unlock()
+	if !c.provisioned {
+		return nil
+	}
+	c.mu.RLock()
+	id := c.sandboxID
+	c.mu.RUnlock()
+	if id == "" {
+		return nil
+	}
+	alive, err := isAlive(id)
+	if err != nil {
+		return err
+	}
+	if !alive {
+		c.resetLocked()
+	}
+	return nil
+}
+
+// resetLocked clears all sandbox state. Caller must hold provisionMu.
+func (c *Conversation) resetLocked() {
+	c.provisioned = false
+	c.mu.Lock()
+	c.state = StateNew
+	c.sandboxID = ""
+	c.proxyBaseURL = ""
+	c.proxyHeaders = nil
+	c.agentSessionID = ""
+	c.mu.Unlock()
 }
 
 func (c *Conversation) Info() (id, sandboxID, agentSessionID string, state State) {

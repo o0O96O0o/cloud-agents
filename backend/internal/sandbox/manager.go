@@ -13,6 +13,7 @@ import (
 	"github.com/your-org/platform-backend/internal/conversation"
 )
 
+
 // DefaultAgentPort is the port the claude-agent-server listens on inside the sandbox.
 // It must match the PORT env var passed to the container.
 const DefaultAgentPort = 3000
@@ -126,6 +127,20 @@ func (m *Manager) ProvisionForConversation(ctx context.Context, conv *conversati
 
 func (m *Manager) DeleteSandbox(ctx context.Context, sandboxID string) error {
 	return m.lc.DeleteSandbox(ctx, sandboxID)
+}
+
+// IsSandboxAlive reports whether sandboxID is still in Running state.
+// A 404 response is treated as (false, nil) — the sandbox was cleaned up by the server.
+func (m *Manager) IsSandboxAlive(ctx context.Context, sandboxID string) (bool, error) {
+	info, err := m.lc.GetSandbox(ctx, sandboxID)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return info.Status.State == StateRunning, nil
 }
 
 // httpHealthChecker polls GET {proxyBaseURL}/health until the claude-agent-server

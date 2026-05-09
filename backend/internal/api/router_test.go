@@ -1,12 +1,9 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/your-org/platform-backend/internal/conversation"
 )
 
 func TestCORS_Preflight(t *testing.T) {
@@ -59,10 +56,3 @@ func TestCORS_Wildcard(t *testing.T) {
 var _ ConversationStore = (*mockStore)(nil)
 var _ SandboxManager = (*mockManager)(nil)
 
-// routerMockManager satisfies SandboxManager without recording calls.
-type routerMockManager struct{}
-
-func (m *routerMockManager) ProvisionForConversation(_ context.Context, _ *conversation.Conversation) error {
-	return nil
-}
-func (m *routerMockManager) DeleteSandbox(_ context.Context, _ string) error { return nil }

@@ -93,7 +93,7 @@ func newAPILifecycleClient(serverURL, apiKey string) *apiLifecycleClient {
 	return &apiLifecycleClient{
 		baseURL:    serverURL + "/v1",
 		apiKey:     apiKey,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
