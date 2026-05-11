@@ -8,7 +8,7 @@ import { useChat } from '@/hooks/useChat'
 export function ChatPage() {
   const [username, setUsername] = useState<string | null>(null)
   const [inputValue, setInputValue] = useState('')
-  const { messages, sandboxState, sending, sendMessage } = useChat(username ?? '')
+  const { messages, sandboxState, sending, sendMessage, approvePermission, answerQuestion } = useChat(username ?? '')
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,7 +55,14 @@ export function ChatPage() {
               <p className="text-neutral-400 text-sm">What can I help you with?</p>
             </div>
           ) : (
-            messages.map(msg => <ChatMessage key={msg.id} message={msg} />)
+            messages.map(msg => (
+                <ChatMessage
+                  key={msg.id}
+                  message={msg}
+                  onApprovePermission={msg.status === 'requesting' ? approvePermission : undefined}
+                  onAnswerQuestion={msg.status === 'asking' ? answerQuestion : undefined}
+                />
+              ))
           )}
           <div ref={bottomRef} />
         </div>

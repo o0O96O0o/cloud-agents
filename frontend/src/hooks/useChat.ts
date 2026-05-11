@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react'
-import { createTask, sendMessage as apiSendMessage } from '@/api/client'
-import type { Message, SandboxState, ToolActivity } from '@/types'
+import { useState, useCallback, useRef } from 'react'
+import { createTask, sendMessage as apiSendMessage, respondToPermission, respondToQuestion as apiRespondToQuestion } from '@/api/client'
+import type { Message, PermissionRequest, Question, SandboxState, ToolActivity, ToolUseBlock } from '@/types'
 
 async function* parseSSE(response: Response) {
   const reader = response.body!.getReader()
@@ -35,6 +35,29 @@ export function useChat(username: string) {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [sandboxState, setSandboxState] = useState<SandboxState>('idle')
   const [sending, setSending] = useState(false)
+  const currentAssistantMsgIdRef = useRef<string | null>(null)
+
+  const approvePermission = useCallback(async (approved: boolean) => {
+    if (!taskId) return
+    const msgId = currentAssistantMsgIdRef.current
+    await respondToPermission(taskId, approved ? 'allow' : 'deny')
+    if (msgId) {
+      setMessages(prev =>
+        prev.map(m => m.id === msgId ? { ...m, status: 'streaming', permissionRequest: undefined } : m)
+      )
+    }
+  }, [taskId])
+
+  const answerQuestion = useCallback(async (answers: Record<string, string | string[]>) => {
+    if (!taskId) return
+    const msgId = currentAssistantMsgIdRef.current
+    await apiRespondToQuestion(taskId, answers)
+    if (msgId) {
+      setMessages(prev =>
+        prev.map(m => m.id === msgId ? { ...m, status: 'streaming', pendingQuestions: undefined } : m)
+      )
+    }
+  }, [taskId])
 
   const sendMessage = useCallback(async (prompt: string) => {
     setSending(true)
@@ -47,11 +70,12 @@ export function useChat(username: string) {
 
     const userMsgId = makeId()
     const assistantMsgId = makeId()
+    currentAssistantMsgIdRef.current = assistantMsgId
 
     setMessages(prev => [
       ...prev,
       { id: userMsgId, role: 'user', text: prompt, status: 'done' },
-      { id: assistantMsgId, role: 'assistant', text: '', status: 'streaming', toolActivity: [] },
+      { id: assistantMsgId, role: 'assistant', text: '', status: 'streaming', toolActivity: [], toolUseBlocks: [] },
     ])
 
     setSandboxState('provisioning')
@@ -75,18 +99,59 @@ export function useChat(username: string) {
             break
           }
           case 'message.assistant': {
-            const text = (data as { text?: string }).text ?? ''
-            if (text) {
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantMsgId ? { ...m, text: m.text + text } : m
-                )
-              )
+            const msgData = data as {
+              text?: string
+              message?: { content?: Array<{ type: string; id?: string; name?: string; input?: Record<string, unknown> }> }
             }
+            const text = msgData.text ?? ''
+            const toolUseBlocks: ToolUseBlock[] = (msgData.message?.content ?? [])
+              .filter(b => b.type === 'tool_use')
+              .map(b => ({ id: b.id!, name: b.name!, input: b.input ?? {} }))
+
+            setMessages(prev =>
+              prev.map(m => {
+                if (m.id !== assistantMsgId) return m
+                return {
+                  ...m,
+                  text: text ? m.text + text : m.text,
+                  toolUseBlocks: toolUseBlocks.length > 0
+                    ? [...(m.toolUseBlocks ?? []), ...toolUseBlocks]
+                    : m.toolUseBlocks,
+                }
+              })
+            )
+            break
+          }
+          case 'permission.requested': {
+            const d = data as {
+              toolName: string
+              toolInput: Record<string, unknown>
+              toolUseId: string
+              blockedPath?: string | null
+              decisionReason?: string | null
+            }
+            const permissionRequest: PermissionRequest = {
+              toolName: d.toolName,
+              toolInput: d.toolInput,
+              toolUseId: d.toolUseId,
+              blockedPath: d.blockedPath,
+              decisionReason: d.decisionReason,
+            }
+            setMessages(prev =>
+              prev.map(m => m.id !== assistantMsgId ? m : { ...m, status: 'requesting', permissionRequest })
+            )
+            break
+          }
+          case 'question.asked': {
+            const d = data as { questions: Question[] }
+            setMessages(prev =>
+              prev.map(m => m.id !== assistantMsgId ? m : { ...m, status: 'asking', pendingQuestions: d.questions })
+            )
             break
           }
           case 'session.status': {
-            if ((data as { status?: string }).status === 'idle') {
+            const status = (data as { status?: string }).status
+            if (status === 'idle') {
               setMessages(prev =>
                 prev.map(m => m.id === assistantMsgId ? { ...m, status: 'done' } : m)
               )
@@ -159,5 +224,5 @@ export function useChat(username: string) {
     }
   }, [taskId, username])
 
-  return { messages, sandboxState, sending, sendMessage }
+  return { messages, sandboxState, sending, sendMessage, approvePermission, answerQuestion }
 }

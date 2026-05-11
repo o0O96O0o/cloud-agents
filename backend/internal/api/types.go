@@ -21,6 +21,14 @@ type getTaskResponse struct {
 	SessionID string `json:"session_id"`
 }
 
+type respondToPermissionRequest struct {
+	Decision string `json:"decision" binding:"required"` // "allow" or "deny"
+}
+
+type respondToQuestionRequest struct {
+	Answers map[string]any `json:"answers" binding:"required"`
+}
+
 type healthResponse struct {
 	Status string `json:"status"`
 }

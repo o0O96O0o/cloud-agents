@@ -67,11 +67,21 @@ func (m *mockManager) IsSandboxAlive(_ context.Context, _ string) (bool, error) 
 }
 
 type mockProxy struct {
-	err error
+	err           error
+	permissionErr error
+	questionErr   error
 }
 
 func (m *mockProxy) StreamMessage(_ context.Context, _ *task.Task, _ string, w http.ResponseWriter) error {
 	return m.err
+}
+
+func (m *mockProxy) RespondToPermission(_ context.Context, _ *task.Task, _ string) error {
+	return m.permissionErr
+}
+
+func (m *mockProxy) RespondToQuestion(_ context.Context, _ *task.Task, _ map[string]any) error {
+	return m.questionErr
 }
 
 // ---- helpers ----

@@ -18,3 +18,19 @@ export async function sendMessage(taskId: string, prompt: string): Promise<Respo
 export async function deleteTask(taskId: string): Promise<void> {
   await fetch(`${BASE}/api/tasks/${taskId}`, { method: 'DELETE' })
 }
+
+export async function respondToPermission(taskId: string, decision: 'allow' | 'deny'): Promise<void> {
+  await fetch(`${BASE}/api/tasks/${taskId}/permissions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision }),
+  })
+}
+
+export async function respondToQuestion(taskId: string, answers: Record<string, string | string[]>): Promise<void> {
+  await fetch(`${BASE}/api/tasks/${taskId}/questions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers }),
+  })
+}

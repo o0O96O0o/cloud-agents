@@ -157,3 +157,87 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 	}
 	return nil
 }
+
+type permissionDecisionRequest struct {
+	Decision string `json:"decision"`
+}
+
+type questionAnswerRequest struct {
+	Answers map[string]any `json:"answers"`
+}
+
+// RespondToPermission forwards a permission decision (allow/deny) to the
+// claude-agent-server for a pending canUseTool request on the session.
+func (p *Proxy) RespondToPermission(ctx context.Context, t *task.Task, decision string) error {
+	proxyBaseURL, proxyHeaders := t.GetProxyInfo()
+	sessionID := t.GetSessionID()
+	if sessionID == "" {
+		return fmt.Errorf("no session ID for task %s", t.ID)
+	}
+
+	upstreamURL := proxyBaseURL + "/sessions/" + sessionID + "/permissions/respond"
+
+	body, err := json.Marshal(permissionDecisionRequest{Decision: decision})
+	if err != nil {
+		return fmt.Errorf("marshal body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range proxyHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upstream request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upstream %d: %s", resp.StatusCode, b)
+	}
+	return nil
+}
+
+// RespondToQuestion forwards user answers to a pending AskUserQuestion request
+// on the agent session.
+func (p *Proxy) RespondToQuestion(ctx context.Context, t *task.Task, answers map[string]any) error {
+	proxyBaseURL, proxyHeaders := t.GetProxyInfo()
+	sessionID := t.GetSessionID()
+	if sessionID == "" {
+		return fmt.Errorf("no session ID for task %s", t.ID)
+	}
+
+	upstreamURL := proxyBaseURL + "/sessions/" + sessionID + "/questions/respond"
+
+	body, err := json.Marshal(questionAnswerRequest{Answers: answers})
+	if err != nil {
+		return fmt.Errorf("marshal body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range proxyHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("upstream request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upstream %d: %s", resp.StatusCode, b)
+	}
+	return nil
+}

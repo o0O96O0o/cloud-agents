@@ -32,6 +32,8 @@ func NewRouter(store TaskStore, mgr SandboxManager, corsOrigin string, fileStore
 
 	r.POST("/api/tasks", h.CreateTask)
 	r.POST("/api/tasks/:id/messages", h.SendMessage)
+	r.POST("/api/tasks/:id/permissions", h.RespondToPermission)
+	r.POST("/api/tasks/:id/questions", h.RespondToQuestion)
 	r.GET("/api/tasks/:id", h.GetTask)
 	r.GET("/api/tasks/:id/history", h.GetTaskHistory)
 	r.DELETE("/api/tasks/:id", h.DeleteTask)

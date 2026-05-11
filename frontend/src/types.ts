@@ -1,6 +1,32 @@
 export type Role = 'user' | 'assistant'
 
-export type MessageStatus = 'streaming' | 'done' | 'error'
+export type MessageStatus = 'streaming' | 'done' | 'error' | 'requesting' | 'asking'
+
+export interface ToolUseBlock {
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface PermissionRequest {
+  toolName: string
+  toolInput: Record<string, unknown>
+  toolUseId: string
+  blockedPath?: string | null
+  decisionReason?: string | null
+}
+
+export interface QuestionOption {
+  label: string
+  description: string
+}
+
+export interface Question {
+  question: string
+  header: string
+  options: QuestionOption[]
+  multiSelect: boolean
+}
 
 export interface Message {
   id: string
@@ -8,6 +34,9 @@ export interface Message {
   text: string
   status: MessageStatus
   toolActivity?: ToolActivity[]
+  toolUseBlocks?: ToolUseBlock[]
+  permissionRequest?: PermissionRequest
+  pendingQuestions?: Question[]
 }
 
 export interface ToolActivity {

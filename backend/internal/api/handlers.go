@@ -37,6 +37,11 @@ type MessageProxy interface {
 	// StreamMessage forwards prompt to the sandbox associated with t and writes
 	// the streamed response directly to w.
 	StreamMessage(ctx context.Context, t *task.Task, prompt string, w http.ResponseWriter) error
+	// RespondToPermission forwards a permission decision (allow/deny) to the
+	// sandbox for the pending canUseTool request on the session.
+	RespondToPermission(ctx context.Context, t *task.Task, decision string) error
+	// RespondToQuestion forwards user answers to a pending AskUserQuestion request.
+	RespondToQuestion(ctx context.Context, t *task.Task, answers map[string]any) error
 }
 
 // Handler wires together the store, sandbox manager, message proxy, and file store
@@ -291,6 +296,90 @@ func (h *Handler) GetTaskHistory(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, entries)
+}
+
+// RespondToPermission handles POST /api/tasks/:id/permissions.
+//
+// @Summary      Respond to a pending tool permission request
+// @Description  Approve or deny a canUseTool permission request that has paused the agent session.
+// @Tags         tasks
+// @Accept       json
+// @Param        id    path  string                          true  "Task ID"
+// @Param        body  body  respondToPermissionRequest      true  "Permission decision"
+// @Success      204
+// @Failure      400  {string}  string  "invalid request body"
+// @Failure      404  {string}  string  "task not found or no pending permission"
+// @Failure      502  {string}  string  "failed to respond to permission"
+// @Router       /api/tasks/{id}/permissions [post]
+func (h *Handler) RespondToPermission(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		c.String(http.StatusInternalServerError, "failed to get task")
+		return
+	}
+	if t == nil {
+		c.String(http.StatusNotFound, "task not found")
+		return
+	}
+
+	var body respondToPermissionRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.String(http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.proxy.RespondToPermission(c.Request.Context(), t, body.Decision); err != nil {
+		log.Printf("respond to permission for task %s: %v", id, err)
+		c.String(http.StatusBadGateway, "failed to respond to permission")
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+	c.Writer.WriteHeaderNow()
+}
+
+// RespondToQuestion handles POST /api/tasks/:id/questions.
+//
+// @Summary      Respond to a pending AskUserQuestion request
+// @Description  Submit answers to a clarifying question that has paused the agent session.
+// @Tags         tasks
+// @Accept       json
+// @Param        id    path  string                         true  "Task ID"
+// @Param        body  body  respondToQuestionRequest       true  "Question answers"
+// @Success      204
+// @Failure      400  {string}  string  "invalid request body"
+// @Failure      404  {string}  string  "task not found or no pending question"
+// @Failure      502  {string}  string  "failed to respond to question"
+// @Router       /api/tasks/{id}/questions [post]
+func (h *Handler) RespondToQuestion(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		c.String(http.StatusInternalServerError, "failed to get task")
+		return
+	}
+	if t == nil {
+		c.String(http.StatusNotFound, "task not found")
+		return
+	}
+
+	var body respondToQuestionRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.String(http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.proxy.RespondToQuestion(c.Request.Context(), t, body.Answers); err != nil {
+		log.Printf("respond to question for task %s: %v", id, err)
+		c.String(http.StatusBadGateway, "failed to respond to question")
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+	c.Writer.WriteHeaderNow()
 }
 
 // Health handles GET /health.
