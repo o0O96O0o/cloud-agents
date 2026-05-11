@@ -12,6 +12,7 @@ type Config struct {
 	Sandbox   SandboxConfig   `yaml:"sandbox"`
 	Anthropic AnthropicConfig `yaml:"anthropic"`
 	OrangeFS  OrangeFSConfig  `yaml:"orangefs"`
+	Redis     RedisConfig     `yaml:"redis"`
 }
 
 type ServerConfig struct {
@@ -32,10 +33,14 @@ type PlatformConfig struct {
 }
 
 type AnthropicConfig struct {
-	APIKey               string `yaml:"api_key"`
-	BaseURL              string `yaml:"base_url"`
-	Model                string `yaml:"model"`
+	APIKey                   string `yaml:"api_key"`
+	BaseURL                  string `yaml:"base_url"`
+	Model                    string `yaml:"model"`
 	DisableExperimentalBetas string `yaml:"disable_experimental_betas"`
+}
+
+type RedisConfig struct {
+	URL string `yaml:"url"` // e.g. redis://localhost:6379; empty = use in-memory store
 }
 
 type OrangeFSConfig struct {
@@ -56,7 +61,7 @@ func Load(path string) (*Config, error) {
 		},
 		Sandbox: SandboxConfig{
 			ServerURL: "http://localhost:8080",
-			Image:     "opensandbox/claude-agent-server:latest",
+			Image:     "opensandbox/code-interpreter:local",
 		},
 	}
 

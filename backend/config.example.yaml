@@ -22,6 +22,11 @@ anthropic:
   # Optional — set to "1" to disable experimental betas (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   disable_experimental_betas: ""
 
+# Task store — omit or leave url empty for in-memory store (state lost on restart).
+# Set url to enable Redis persistence across restarts and multiple instances.
+redis:
+  url: ""  # e.g. redis://localhost:6379 or redis://:password@host:port/db
+
 orangefs:
   # Injected into sandbox as ORANGEFS_RS_ADDR (internal host:port)
   addr: ""

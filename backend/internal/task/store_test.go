@@ -150,7 +150,7 @@ func TestResetForReprovisioning_ClearsState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	task.SetAgentSessionID("sess-1")
+	task.SetSessionID("sess-1")
 
 	if task.GetState() != StateRunning {
 		t.Fatalf("expected StateRunning before reset, got %v", task.GetState())
@@ -168,8 +168,9 @@ func TestResetForReprovisioning_ClearsState(t *testing.T) {
 	if url != "" {
 		t.Errorf("expected empty proxyBaseURL after reset, got %q", url)
 	}
-	if task.GetAgentSessionID() != "" {
-		t.Errorf("expected empty agentSessionID after reset, got %q", task.GetAgentSessionID())
+	// sessionID is never cleared on reset — it must be retained for OFS history reads.
+	if task.GetSessionID() != "sess-1" {
+		t.Errorf("expected sessionID retained after reset, got %q", task.GetSessionID())
 	}
 }
 
@@ -301,14 +302,53 @@ func TestResetForReprovisioning_AllowsReprovision(t *testing.T) {
 	}
 }
 
+func TestComputeStateStr_AllCombinations(t *testing.T) {
+	cases := []struct {
+		setupFn   func(*Task)
+		sessionID string
+		want      string
+	}{
+		{func(t *Task) {}, "", "pending"},
+		{func(t *Task) {}, "s1", "paused"},
+		{func(t *Task) { t.SetProvisioning() }, "", "provisioning"},
+		{func(t *Task) { t.SetProvisioning() }, "s1", "resuming"},
+		{func(t *Task) { t.SetRunning("sb", "url", nil) }, "", "idle"},
+		{func(t *Task) { t.SetRunning("sb", "url", nil) }, "s1", "active"},
+		{func(t *Task) { t.SetError() }, "", "error"},
+		{func(t *Task) { t.SetError() }, "s1", "error"},
+	}
+	for _, tc := range cases {
+		s := NewStore()
+		task := s.Create("", nil)
+		tc.setupFn(task)
+		if tc.sessionID != "" {
+			task.SetSessionID(tc.sessionID)
+		}
+		_, _, _, got := task.Info()
+		if got != tc.want {
+			t.Errorf("state=%v sessionID=%q: Info() state = %q, want %q", task.GetState(), tc.sessionID, got, tc.want)
+		}
+	}
+}
+
+func TestSetSessionID_NoOverwrite(t *testing.T) {
+	s := NewStore()
+	task := s.Create("", nil)
+	task.SetSessionID("first")
+	task.SetSessionID("second")
+	if got := task.GetSessionID(); got != "first" {
+		t.Errorf("expected sessionID to remain %q after second SetSessionID, got %q", "first", got)
+	}
+}
+
 func TestStateString(t *testing.T) {
 	cases := []struct {
 		state State
 		want  string
 	}{
-		{StateNew, "provisioning"},
+		{StateNew, "pending"},
 		{StateProvisioning, "provisioning"},
-		{StateRunning, "running"},
+		{StateRunning, "idle"},
 		{StateError, "error"},
 		{State(99), "unknown"},
 	}

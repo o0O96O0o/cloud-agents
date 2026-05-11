@@ -27,3 +27,6 @@ orangefs:
   volume: "cozeloop"
   access_key: "AKDD00000000000COGGYYJVJBPPJX5"
   secret_key: "ASDDTRZhxyLSdUzWjZrpcjILVZMcCeAkdPFKBxlX"
+
+redis:
+  url: "redis://localhost:6379"

@@ -17,7 +17,7 @@ func proxyTask(baseURL string, headers map[string]string, sessionID string) *tas
 	t := s.Create("", nil)
 	t.SetRunning("sb1", baseURL, headers)
 	if sessionID != "" {
-		t.SetAgentSessionID(sessionID)
+		t.SetSessionID(sessionID)
 	}
 	return t
 }
@@ -44,8 +44,8 @@ func TestStreamMessage_NewSession(t *testing.T) {
 	if capturedPath != "/sessions" {
 		t.Errorf("expected path /sessions, got %q", capturedPath)
 	}
-	if tsk.GetAgentSessionID() != "abc123" {
-		t.Errorf("expected agentSessionID=abc123, got %q", tsk.GetAgentSessionID())
+	if tsk.GetSessionID() != "abc123" {
+		t.Errorf("expected sessionID=abc123, got %q", tsk.GetSessionID())
 	}
 	body := rw.Body.String()
 	if !strings.Contains(body, "session.init") {

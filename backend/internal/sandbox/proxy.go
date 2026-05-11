@@ -48,13 +48,13 @@ func NewProxy() *Proxy {
 // on the first message.
 func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, w http.ResponseWriter) error {
 	proxyBaseURL, proxyHeaders := t.GetProxyInfo()
-	agentSessionID := t.GetAgentSessionID()
+	sessionID := t.GetSessionID()
 
 	var upstreamURL string
-	if agentSessionID == "" {
+	if sessionID == "" {
 		upstreamURL = proxyBaseURL + "/sessions"
 	} else {
-		upstreamURL = proxyBaseURL + "/sessions/" + agentSessionID + "/messages"
+		upstreamURL = proxyBaseURL + "/sessions/" + sessionID + "/messages"
 	}
 
 	body, err := json.Marshal(agentRequest{
@@ -117,8 +117,8 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 				SessionID string `json:"sessionId"`
 			}
 			if json.Unmarshal([]byte(dataStr), &payload) == nil && payload.SessionID != "" {
-				t.SetAgentSessionID(payload.SessionID)
-				log.Printf("task %s: agent session ID = %s", t.ID, payload.SessionID)
+				t.SetSessionID(payload.SessionID)
+				log.Printf("task %s: session ID = %s", t.ID, payload.SessionID)
 			}
 			fmt.Fprintf(w, "%s\n", line)
 		default:

@@ -14,11 +14,11 @@ type sendMessageRequest struct {
 }
 
 type getTaskResponse struct {
-	ID             string `json:"id"`
-	Username       string `json:"username"`
-	SandboxState   string `json:"sandbox_state"`
-	SandboxID      string `json:"sandbox_id"`
-	AgentSessionID string `json:"agent_session_id"`
+	ID        string `json:"id"`
+	Username  string `json:"username"`
+	State     string `json:"state"`
+	SandboxID string `json:"sandbox_id"`
+	SessionID string `json:"session_id"`
 }
 
 type healthResponse struct {

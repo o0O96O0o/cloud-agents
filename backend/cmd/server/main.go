@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/your-org/platform-backend/internal/api"
 	"github.com/your-org/platform-backend/internal/sandbox"
 	"github.com/your-org/platform-backend/internal/storage"
@@ -53,9 +55,25 @@ func main() {
 		log.Printf("OFS client configured: endpoint=%s volume=%s", cfg.OrangeFS.Endpoint, cfg.OrangeFS.Volume)
 	}
 
-	store := task.NewStore()
+	var repo task.Repository
+	if cfg.Redis.URL != "" {
+		opt, err := redis.ParseURL(cfg.Redis.URL)
+		if err != nil {
+			log.Fatalf("parse redis URL: %v", err)
+		}
+		rdb := redis.NewClient(opt)
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			log.Fatalf("redis ping: %v", err)
+		}
+		repo = task.NewRedisRepository(rdb)
+		log.Printf("task store: Redis at %s", cfg.Redis.URL)
+	} else {
+		repo = task.NewMemoryRepository()
+		log.Printf("task store: in-memory (set redis.url in config to enable persistence)")
+	}
+
 	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform)
-	router := api.NewRouter(store, mgr, cfg.Server.CORSOrigin, ofsClient)
+	router := api.NewRouter(repo, mgr, cfg.Server.CORSOrigin, ofsClient)
 
 	log.Printf("listening on :%s", cfg.Server.Port)
 	if err := http.ListenAndServe(":"+cfg.Server.Port, router); err != nil {

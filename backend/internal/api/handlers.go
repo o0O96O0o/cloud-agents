@@ -11,16 +11,8 @@ import (
 	"github.com/your-org/platform-backend/internal/task"
 )
 
-// TaskStore manages the lifecycle of Task records in memory.
-type TaskStore interface {
-	// Create initialises a new Task owned by username with optional extra environment
-	// variables and returns it. The caller owns the returned pointer.
-	Create(username string, extraEnv map[string]string) *task.Task
-	// Get returns the Task with the given ID, or nil if it does not exist.
-	Get(id string) *task.Task
-	// Delete removes the Task with the given ID from the store.
-	Delete(id string)
-}
+// TaskStore is the storage interface for Task records.
+type TaskStore = task.Repository
 
 // SandboxManager provisions and tears down the compute sandbox that backs a task.
 type SandboxManager interface {
@@ -80,7 +72,12 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	// body is optional — ignore decode errors
 	json.NewDecoder(r.Body).Decode(&body)
 
-	t := h.store.Create(body.Username, body.Env)
+	t, err := h.store.Create(r.Context(), body.Username, body.Env)
+	if err != nil {
+		log.Printf("create task: %v", err)
+		http.Error(w, "failed to create task", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(createTaskResponse{ID: t.ID})
@@ -103,7 +100,12 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 //   - 502 Bad Gateway  – sandbox provisioning failed
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	t := h.store.Get(id)
+	t, err := h.store.Get(r.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		return
+	}
 	if t == nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
@@ -139,7 +141,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Use background context so provisioning survives client disconnects.
 	provisionCtx := context.Background()
-	err := t.EnsureProvisioned(func() error {
+	err = t.EnsureProvisioned(func() error {
 		return h.manager.ProvisionForTask(provisionCtx, t)
 	})
 	if err != nil {
@@ -162,31 +164,36 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 // Response 200 JSON:
 //
 //	{
-//	  "id":               "<task-id>",
-//	  "username":         "<username>",
-//	  "sandbox_state":    "<state-string>",
-//	  "sandbox_id":       "<sandbox-id>",
-//	  "agent_session_id": "<session-id>"
+//	  "id":         "<task-id>",
+//	  "username":   "<username>",
+//	  "state":      "pending|provisioning|idle|active|paused|resuming|error",
+//	  "sandbox_id": "<sandbox-id or empty>",
+//	  "session_id": "<session-id or empty>"
 //	}
 //
 // Errors:
 //   - 404 Not Found – unknown task ID
 func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	t := h.store.Get(id)
+	t, err := h.store.Get(r.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		return
+	}
 	if t == nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 
-	_, sandboxID, agentSessionID, state := t.Info()
+	_, sandboxID, sessionID, stateStr := t.Info()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(getTaskResponse{
-		ID:             id,
-		Username:       t.Username,
-		SandboxState:   state.String(),
-		SandboxID:      sandboxID,
-		AgentSessionID: agentSessionID,
+		ID:        id,
+		Username:  t.Username,
+		State:     stateStr,
+		SandboxID: sandboxID,
+		SessionID: sessionID,
 	})
 }
 
@@ -200,14 +207,23 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 //   - 404 Not Found – unknown task ID
 func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	t := h.store.Get(id)
+	t, err := h.store.Get(r.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		return
+	}
 	if t == nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 
 	sandboxID := t.GetSandboxID()
-	h.store.Delete(id)
+	if err := h.store.Delete(r.Context(), id); err != nil {
+		log.Printf("delete task %s: %v", id, err)
+		http.Error(w, "failed to delete task", http.StatusInternalServerError)
+		return
+	}
 
 	if sandboxID != "" {
 		if err := h.manager.DeleteSandbox(context.Background(), sandboxID); err != nil {
@@ -230,7 +246,12 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 //   - 500 Internal Error      – storage read failure
 func (h *Handler) GetTaskHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	t := h.store.Get(id)
+	t, err := h.store.Get(r.Context(), id)
+	if err != nil {
+		log.Printf("get task %s: %v", id, err)
+		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		return
+	}
 	if t == nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return

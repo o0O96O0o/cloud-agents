@@ -1,6 +1,6 @@
 # Backend Reference
 
-Go HTTP server that sits between the browser and OpenSandbox. It manages conversation state, provisions sandboxes on demand, and proxies SSE streams from the claude-agent-server running inside each sandbox.
+Go HTTP server that sits between the browser and OpenSandbox. It manages task and session state, provisions sandboxes on demand, and proxies SSE streams from the claude-agent-server running inside each sandbox.
 
 ---
 
@@ -31,12 +31,12 @@ Config is loaded from a YAML file (`config.yaml` by default; override with `-con
 
 ```yaml
 server:
-  port: "8081"          # default
+  port: "8081"                          # default
   cors_origin: "http://localhost:5173"  # default
 
 sandbox:
-  api_key: your-opensandbox-api-key   # required
-  server_url: "http://localhost:8080"  # default
+  api_key: your-opensandbox-api-key     # required
+  server_url: "http://localhost:8080"   # default
   image: "opensandbox/claude-agent-server:latest"  # default
   # Optional — both os and arch must be set to take effect
   # platform:
@@ -44,17 +44,35 @@ sandbox:
   #   arch: amd64
 
 anthropic:
-  api_key: your-anthropic-api-key   # required — injected into sandbox as ANTHROPIC_API_KEY
-  base_url: ""   # optional — leave empty for api.anthropic.com
-  model: ""      # optional — injected as ANTHROPIC_MODEL
-  disable_experimental_betas: ""  # set to "1" to disable — injected as CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+  api_key: your-anthropic-api-key  # required — injected into sandbox as ANTHROPIC_API_KEY
+  base_url: ""                     # optional — leave empty for api.anthropic.com
+  model: ""                        # optional — injected as ANTHROPIC_MODEL
+  disable_experimental_betas: ""   # set to "1" to disable
+
+# Task store — omit or leave url empty to use the in-memory store (lost on restart).
+# Set url to enable Redis persistence across restarts and multiple instances.
+redis:
+  url: ""  # e.g. redis://localhost:6379
 
 orangefs:
-  addr: ""    # optional — injected as ORANGEFS_RS_ADDR
-  volume: ""  # optional — injected as ORANGEFS_VOLUME
+  addr: ""        # optional — injected as ORANGEFS_RS_ADDR
+  token: ""       # optional — injected as ORANGEFS_TOKEN
+  endpoint: ""    # optional — S3-compatible endpoint for history storage
+  volume: ""
+  access_key: ""
+  secret_key: ""
 ```
 
-See `config.example.yaml` for the full annotated template.
+See `config.example.yaml` for the full annotated template and [docs/specs/configuration.md](docs/specs/configuration.md) for field-by-field reference.
+
+### Task store selection at startup
+
+| `redis.url` | Store used | Persistence |
+|---|---|---|
+| empty (default) | In-memory (`MemoryRepository`) | Lost on restart |
+| set | Redis (`RedisRepository`) | Survives restarts; shared across instances |
+
+When Redis is configured the server pings it at startup and exits immediately if unreachable.
 
 ---
 
@@ -63,22 +81,32 @@ See `config.example.yaml` for the full annotated template.
 ```
 backend/
 ├── cmd/server/
-│   └── main.go                   # entry point: load config, wire deps, start server
+│   └── main.go                    # entry point: load config, wire deps, start server
 ├── internal/
 │   ├── api/
-│   │   ├── router.go             # ServeMux routes + CORS middleware
-│   │   └── handlers.go           # HTTP handlers (one per endpoint)
+│   │   ├── router.go              # ServeMux routes + CORS middleware
+│   │   ├── handlers.go            # HTTP handlers (one per endpoint)
+│   │   └── types.go               # request / response structs
 │   ├── sandbox/
-│   │   ├── client.go             # native HTTP client for OpenSandbox lifecycle API + types
-│   │   ├── manager.go            # sandbox lifecycle: create → poll → health-check → proxy URL
-│   │   └── proxy.go              # SSE pipe from claude-agent-server to browser
-│   └── conversation/
-│       └── store.go              # in-memory conversation state + sync primitives
+│   │   ├── client.go              # HTTP client for OpenSandbox lifecycle API
+│   │   ├── manager.go             # sandbox lifecycle: create → poll → health-check
+│   │   └── proxy.go               # SSE pipe from claude-agent-server to browser
+│   ├── storage/
+│   │   └── client.go              # OFS (S3-compatible) client for conversation history
+│   └── task/
+│       ├── repository.go          # Repository interface + taskOps interface
+│       ├── store.go               # Task struct, in-process mutation methods, MemoryRepository
+│       └── redis_repository.go    # RedisRepository + distributed lock (redisTaskOps)
 ├── pkg/
 │   ├── config/
-│   │   └── config.go             # YAML config loader with defaults
+│   │   └── config.go              # YAML config loader with defaults
 │   └── constants/
-│       └── constants.go          # default Anthropic base URL and model
+│       └── constants.go
+├── docs/specs/
+│   ├── configuration.md           # Full configuration field reference
+│   ├── resource-mapping.md        # Task / Sandbox / Session lifecycle and invariants
+│   ├── redis-storage.md           # Redis data model and key operations
+│   └── ofsspec.md                 # OFS file layout for session history
 ├── go.mod
 └── go.sum
 ```
@@ -87,17 +115,38 @@ backend/
 
 ## API Endpoints
 
-| Method   | Path                                  | Status | Body / Response                                              |
-|----------|---------------------------------------|--------|--------------------------------------------------------------|
-| `POST`   | `/api/conversations`                  | 201    | `{ "env": {...} }` (optional) → `{ "id": "<uuid>" }`       |
-| `POST`   | `/api/conversations/:id/messages`     | 200    | `{ "prompt": "..." }` → `text/event-stream` (SSE)           |
-| `GET`    | `/api/conversations/:id`              | 200    | `{ id, sandboxState, sandboxId, agentSessionId }`           |
-| `DELETE` | `/api/conversations/:id`              | 204    | tears down sandbox, removes conversation from store         |
-| `GET`    | `/health`                             | 200    | `{ "status": "ok" }`                                        |
+| Method | Path | Status | Description |
+|---|---|---|---|
+| `POST` | `/api/tasks` | 201 | Create a task → `{ "id": "<uuid>" }` |
+| `POST` | `/api/tasks/:id/messages` | 200 | Send a message (SSE stream) |
+| `GET` | `/api/tasks/:id` | 200 | Get task state |
+| `GET` | `/api/tasks/:id/history` | 200 | Get conversation history from OFS |
+| `DELETE` | `/api/tasks/:id` | 204 | Delete task and tear down sandbox |
+| `GET` | `/health` | 200 | Liveness probe → `{ "status": "ok" }` |
 
-`sandboxState` values: `"provisioning"` · `"running"` · `"error"`
+### POST /api/tasks — request body (optional)
 
-The optional `env` body on `POST /api/conversations` merges additional environment variables into the sandbox at provision time (overrides the base env from config).
+```json
+{ "username": "alice", "env": { "KEY": "VALUE" } }
+```
+
+`env` merges additional environment variables into the sandbox at provision time (overrides the base env from config).
+
+### GET /api/tasks/:id — response
+
+```json
+{
+  "id": "a1b2c3...",
+  "username": "alice",
+  "state": "active",
+  "sandbox_id": "sb-xyz",
+  "session_id": "sess-abc"
+}
+```
+
+`state` values: `pending` · `provisioning` · `idle` · `active` · `paused` · `resuming` · `error`
+
+See [docs/specs/resource-mapping.md](docs/specs/resource-mapping.md) for the full state table.
 
 ### SSE stream format (proxied verbatim from claude-agent-server)
 
@@ -107,15 +156,6 @@ data: {"sessionId":"abc123","model":"claude-sonnet-4-6",...}
 
 event: message.assistant
 data: {"text":"Hello!","uuid":"..."}
-
-event: session.status
-data: {"status":"running"}
-
-event: task.started
-data: {"description":"Running bash command","taskType":"tool_use"}
-
-event: task.progress
-data: {"description":"...","lastToolName":"bash"}
 
 event: result
 data: {"totalCostUsd":0.002,"numTurns":1,"stopReason":"end_turn"}
@@ -134,20 +174,21 @@ data: {"message":"...","code":500}
 ```
 Browser
   │
-  │  POST /api/conversations/:id/messages  { prompt }
+  │  POST /api/tasks/:id/messages  { prompt }
   ▼
 Go backend (:8081)
   │
-  │  [first message only]
+  │  [first message — EnsureProvisioned]
   │  POST /v1/sandboxes              → create sandbox
   │  GET  /v1/sandboxes/:id          → poll until state == "Running"
   │  GET  {serverURL}/sandboxes/:id/proxy/3000/health  → poll until {"healthy":true}
+  │  task.SetRunning(sandboxID, proxyBaseURL, headers) persisted to store
   │
-  │  proxyBaseURL = {serverURL}/sandboxes/:id/proxy/3000  (constructed directly)
+  │  proxyBaseURL = {serverURL}/sandboxes/:id/proxy/3000
   │
   │  POST {proxyBaseURL}/sessions                       → first message
   │  POST {proxyBaseURL}/sessions/:sid/messages         → follow-up
-  │  ← pipe SSE back verbatim
+  │  ← pipe SSE back verbatim; extract session.init → task.SetSessionID
   ▼
 OpenSandbox server (:8080)
   └─ /sandboxes/:id/proxy/3000  →  container port 3000  →  claude-agent-server
@@ -159,99 +200,99 @@ OpenSandbox server (:8080)
 
 ---
 
-## Conversation State Machine
+## Task State Machine
 
 ```
-StateNew
+StateNew (0)
   │
-  │  first SendMessage call
+  │  first SendMessage → SetProvisioning()
   ▼
-StateProvisioning  ←── sync.Once ensures only one goroutine runs this
+StateProvisioning (1)  ←── EnsureProvisioned / distributed lock ensures one runner
   │
-  │  1. sandbox Created (POST /v1/sandboxes)
-  │  2. poll until Running (GET /v1/sandboxes/:id, 2s interval, 90s timeout)
-  │  3. health-check agent server (GET {proxyBaseURL}/health, 2s interval, 60s timeout)
+  │  1. CreateSandbox (POST /v1/sandboxes)
+  │  2. Poll until Running (2 s interval, 90 s timeout)
+  │  3. Health-check agent server (2 s interval, 60 s timeout)
+  │  4. SetRunning(sandboxID, proxyBaseURL, headers)
   ▼
-StateRunning
+StateRunning (2)  ←── sandbox alive
   │
-  │  DELETE /api/conversations/:id
+  │  [sandbox expires or is destroyed]
+  │  ResetIfExpired → clears sandbox fields, back to StateNew
+  │
+  │  [DELETE /api/tasks/:id]
   ▼
 (removed from store)
 ```
 
-Both `StateNew` and `StateProvisioning` serialize to `"provisioning"` in the API response. `StateError` is set if `ProvisionForConversation` returns an error; subsequent message attempts return 502.
+The API-visible state label is derived from the sandbox `state` combined with whether `session_id` is set. For example, `StateNew + session_id set = "paused"`.
+
+`StateError (3)` is set when provisioning fails; subsequent message attempts return 502.
 
 ---
 
 ## Key Patterns
 
-### Lazy provisioning with sync.Once
+### Lazy provisioning with distributed lock
 
-The sandbox is created only when the first message arrives. `sync.Once` on the `Conversation` struct ensures concurrent requests to the same conversation block until provisioning finishes.
+The sandbox is created only when the first message arrives. `EnsureProvisioned` on `Task` serialises concurrent callers:
+
+- **In-memory store**: uses an in-process `sync.Mutex` (`provisionMu`).
+- **Redis store**: acquires `task-lock:{id}` (SET NX, 30 s TTL), checks `provisioned` field in Redis, runs fn if `"0"`, verifies `state == Running` was persisted, then sets `provisioned=1`. Lock is released via Lua CAS on success or error.
 
 ```go
-err := conv.EnsureProvisioned(func() error {
-    return h.manager.ProvisionForConversation(provisionCtx, conv)
+err = t.EnsureProvisioned(func() error {
+    return h.manager.ProvisionForTask(context.Background(), t)
 })
 ```
 
-`context.Background()` is used for provisioning: if the client disconnects, the sandbox creation continues so a reconnect can reuse it.
+`context.Background()` is used so provisioning survives client disconnects.
 
-### Proxy URL construction
+### Sandbox expiry detection
 
-After the sandbox reaches `Running`, the proxy URL is constructed directly — no `GetEndpoint` call needed:
-
-```
-proxyBaseURL = {serverURL}/sandboxes/{sandboxID}/proxy/3000
-```
-
-A health check (`GET {proxyBaseURL}/health`) polls until `{"healthy": true}` before the conversation enters `StateRunning`. This bridges the gap between the container starting and the agent server being ready.
-
-### SSE proxy with session ID extraction
-
-The proxy pipes the upstream response line by line. On the `session.init` event it extracts `sessionId` and stores it on the conversation, which becomes the path for all follow-up messages.
-
-```
-First message:    POST {proxyBaseURL}/sessions
-Follow-up:        POST {proxyBaseURL}/sessions/{agentSessionID}/messages
-```
-
-### Native HTTP client (no SDK)
-
-The backend calls the OpenSandbox lifecycle API directly via `net/http` (`internal/sandbox/client.go`), giving access to the full API surface — including `platform` constraints.
+Before every message, `ResetIfExpired` checks whether the current sandbox is still alive:
 
 ```go
-info, err := lc.CreateSandbox(ctx, CreateSandboxRequest{
-    Image:          &ImageSpec{URI: image},
-    Platform:       &PlatformSpec{OS: "linux", Arch: "amd64"}, // optional
-    Timeout:        &timeout,  // 3600s
-    ResourceLimits: ResourceLimits{"cpu": "500m", "memory": "512Mi"},
-    Entrypoint:     []string{"/entrypoint.sh"},
-    Env:            env,
+t.ResetIfExpired(func(sandboxID string) (bool, error) {
+    return h.manager.IsSandboxAlive(ctx, sandboxID)
 })
 ```
+
+If the sandbox has expired, all sandbox fields (`state`, `sandbox_id`, `proxy_base_url`, `proxy_headers`, `provisioned`) are cleared, and the next `EnsureProvisioned` call re-provisions a new one. `session_id` is **never** cleared — the existing session history in OFS remains accessible.
+
+### Task persistence
+
+Task state is stored in one of two backends, selected at startup:
+
+| Backend | Key type | Locking |
+|---|---|---|
+| `MemoryRepository` | `map[string]*Task` | `sync.RWMutex` + per-task `sync.Mutex` |
+| `RedisRepository` | Hash `task:{id}` | Redis lock `task-lock:{id}` |
+
+See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full Redis data model, key operations, and a lifecycle walkthrough.
+
+### Session ID (write-once)
+
+`session_id` is extracted from the `session.init` SSE event on the first message and stored on the task. It is **never cleared or replaced** once set (invariant #4 in resource-mapping.md). This enables history reads from OFS even when no sandbox is active.
+
+- In-memory: in-process mutex check (`if sessionID == "" { set }`).
+- Redis: Lua `HSETNX` script enforces atomicity across instances.
 
 ### Sandbox environment
 
-The manager builds the sandbox env by merging config-level fields (static for all conversations) with per-conversation `extraEnv` (from the `POST /api/conversations` body):
+The manager builds the sandbox env by merging config-level fields with per-task `extraEnv`:
 
 | Env var | Source |
 |---|---|
 | `ANTHROPIC_API_KEY` | `anthropic.api_key` (required) |
 | `PORT` | hardcoded `3000` |
-| `ANTHROPIC_BASE_URL` | `anthropic.base_url` (if non-empty) |
-| `ANTHROPIC_MODEL` | `anthropic.model` (if non-empty) |
-| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | `anthropic.disable_experimental_betas` (if non-empty) |
-| `ORANGEFS_RS_ADDR` | `orangefs.addr` (if non-empty) |
-| `ORANGEFS_VOLUME` | `orangefs.volume` (if non-empty) |
-
----
-
-## Adding a New Endpoint
-
-1. Add a handler method to `Handler` in `internal/api/handlers.go`
-2. Register the route in `internal/api/router.go`
-3. Use `r.PathValue("param")` for URL parameters (Go 1.22+ stdlib mux)
+| `USERNAME` | task `username` field |
+| `TASK_ID` | task `id` — keys OFS storage |
+| `ANTHROPIC_BASE_URL` | `anthropic.base_url` (if set) |
+| `ANTHROPIC_MODEL` | `anthropic.model` (if set) |
+| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | `anthropic.disable_experimental_betas` (if set) |
+| `ORANGEFS_RS_ADDR` | `orangefs.addr` (if set) |
+| `ORANGEFS_TOKEN` | `orangefs.token` (if set) |
+| `ORANGEFS_VOLUME` | `orangefs.volume` (if set) |
 
 ---
 
@@ -261,24 +302,35 @@ The manager builds the sandbox env by merging config-level fields (static for al
 # health
 curl http://localhost:8081/health
 
-# create conversation
-curl -X POST http://localhost:8081/api/conversations
+# create task
+curl -X POST http://localhost:8081/api/tasks
 # → {"id":"<uuid>"}
 
-# create conversation with extra env
-curl -X POST http://localhost:8081/api/conversations \
+# create task with username and extra env
+curl -X POST http://localhost:8081/api/tasks \
   -H "Content-Type: application/json" \
-  -d '{"env": {"MY_VAR": "value"}}'
+  -d '{"username":"alice","env":{"MY_VAR":"value"}}'
 
 # send message (streams SSE)
-curl -X POST http://localhost:8081/api/conversations/<id>/messages \
+curl -X POST http://localhost:8081/api/tasks/<id>/messages \
   -H "Content-Type: application/json" \
   -d '{"prompt":"say hello"}' \
   --no-buffer
 
-# get conversation state
-curl http://localhost:8081/api/conversations/<id>
+# get task state
+curl http://localhost:8081/api/tasks/<id>
 
-# delete conversation + tear down sandbox
-curl -X DELETE http://localhost:8081/api/conversations/<id>
+# get conversation history (requires OFS)
+curl http://localhost:8081/api/tasks/<id>/history
+
+# delete task + tear down sandbox
+curl -X DELETE http://localhost:8081/api/tasks/<id>
 ```
+
+---
+
+## Adding a New Endpoint
+
+1. Add a handler method to `Handler` in `internal/api/handlers.go`
+2. Register the route in `internal/api/router.go`
+3. Use `r.PathValue("param")` for URL parameters (Go 1.22+ stdlib mux)

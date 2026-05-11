@@ -1,0 +1,312 @@
+package task
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
+)
+
+func taskKey(id string) string { return "task:" + id }
+func lockKey(id string) string { return "task-lock:" + id }
+
+// RedisRepository stores tasks as Redis hashes at key task:{id}.
+type RedisRepository struct {
+	rdb *redis.Client
+}
+
+func NewRedisRepository(rdb *redis.Client) *RedisRepository {
+	return &RedisRepository{rdb: rdb}
+}
+
+func (r *RedisRepository) Create(ctx context.Context, username string, extraEnv map[string]string) (*Task, error) {
+	id := uuid.New().String()
+
+	extraEnvJSON, err := json.Marshal(extraEnv)
+	if err != nil {
+		return nil, fmt.Errorf("marshal extra_env: %w", err)
+	}
+
+	if err := r.rdb.HSet(ctx, taskKey(id),
+		"id", id,
+		"username", username,
+		"state", int(StateNew),
+		"sandbox_id", "",
+		"proxy_base_url", "",
+		"proxy_headers", "{}",
+		"session_id", "",
+		"extra_env", string(extraEnvJSON),
+		"provisioned", "0",
+	).Err(); err != nil {
+		return nil, fmt.Errorf("create task: %w", err)
+	}
+
+	t := &Task{
+		ID:       id,
+		Username: username,
+		state:    StateNew,
+		extraEnv: extraEnv,
+	}
+	t.ops = &redisTaskOps{rdb: r.rdb, taskID: id}
+	return t, nil
+}
+
+// Get fetches a task from Redis. Returns nil, nil if the task does not exist.
+func (r *RedisRepository) Get(ctx context.Context, id string) (*Task, error) {
+	fields, err := r.rdb.HGetAll(ctx, taskKey(id)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("get task %s: %w", id, err)
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	return unmarshalTask(r.rdb, fields)
+}
+
+func (r *RedisRepository) Delete(ctx context.Context, id string) error {
+	if err := r.rdb.Del(ctx, taskKey(id), lockKey(id)).Err(); err != nil {
+		return fmt.Errorf("delete task %s: %w", id, err)
+	}
+	return nil
+}
+
+func unmarshalTask(rdb *redis.Client, fields map[string]string) (*Task, error) {
+	id := fields["id"]
+
+	stateInt, _ := strconv.Atoi(fields["state"])
+
+	var proxyHeaders map[string]string
+	if h := fields["proxy_headers"]; h != "" && h != "{}" {
+		if err := json.Unmarshal([]byte(h), &proxyHeaders); err != nil {
+			return nil, fmt.Errorf("unmarshal proxy_headers: %w", err)
+		}
+	}
+
+	var extraEnv map[string]string
+	if e := fields["extra_env"]; e != "" && e != "null" {
+		if err := json.Unmarshal([]byte(e), &extraEnv); err != nil {
+			return nil, fmt.Errorf("unmarshal extra_env: %w", err)
+		}
+	}
+
+	t := &Task{
+		ID:           id,
+		Username:     fields["username"],
+		state:        State(stateInt),
+		sandboxID:    fields["sandbox_id"],
+		proxyBaseURL: fields["proxy_base_url"],
+		proxyHeaders: proxyHeaders,
+		sessionID:    fields["session_id"],
+		extraEnv:     extraEnv,
+		provisioned:  fields["provisioned"] == "1",
+	}
+	t.ops = &redisTaskOps{rdb: rdb, taskID: id}
+	return t, nil
+}
+
+// ---- redisTaskOps implements taskOps ----
+
+type redisTaskOps struct {
+	rdb    *redis.Client
+	taskID string
+}
+
+func (o *redisTaskOps) persistRunning(sandboxID, proxyBaseURL string, proxyHeaders map[string]string) {
+	headersJSON, _ := json.Marshal(proxyHeaders)
+	ctx := context.Background()
+	if err := o.rdb.HSet(ctx, taskKey(o.taskID),
+		"state", int(StateRunning),
+		"sandbox_id", sandboxID,
+		"proxy_base_url", proxyBaseURL,
+		"proxy_headers", string(headersJSON),
+	).Err(); err != nil {
+		log.Printf("redis: persist running for task %s: %v", o.taskID, err)
+	}
+}
+
+func (o *redisTaskOps) persistProvisioning() {
+	ctx := context.Background()
+	if err := o.rdb.HSet(ctx, taskKey(o.taskID), "state", int(StateProvisioning)).Err(); err != nil {
+		log.Printf("redis: persist provisioning for task %s: %v", o.taskID, err)
+	}
+}
+
+func (o *redisTaskOps) persistError() {
+	ctx := context.Background()
+	if err := o.rdb.HSet(ctx, taskKey(o.taskID), "state", int(StateError)).Err(); err != nil {
+		log.Printf("redis: persist error for task %s: %v", o.taskID, err)
+	}
+}
+
+// setSessionScript sets session_id only if it is currently empty (write-once invariant).
+var setSessionScript = redis.NewScript(`
+	if redis.call("HGET", KEYS[1], "session_id") == "" then
+		redis.call("HSET", KEYS[1], "session_id", ARGV[1])
+		return 1
+	end
+	return 0
+`)
+
+func (o *redisTaskOps) persistSessionID(sessionID string) bool {
+	ctx := context.Background()
+	result, err := setSessionScript.Run(ctx, o.rdb, []string{taskKey(o.taskID)}, sessionID).Int()
+	if err != nil {
+		log.Printf("redis: persist session_id for task %s: %v", o.taskID, err)
+		return false
+	}
+	return result == 1
+}
+
+// releaseLockScript releases the lock only if the current holder matches.
+var releaseLockScript = redis.NewScript(`
+	if redis.call("GET", KEYS[1]) == ARGV[1] then
+		redis.call("DEL", KEYS[1])
+		return 1
+	end
+	return 0
+`)
+
+func (o *redisTaskOps) lockHolder() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
+}
+
+func (o *redisTaskOps) releaseLock(holder string) {
+	ctx := context.Background()
+	if err := releaseLockScript.Run(ctx, o.rdb, []string{lockKey(o.taskID)}, holder).Err(); err != nil {
+		log.Printf("redis: release lock for task %s: %v", o.taskID, err)
+	}
+}
+
+// withLock acquires the per-task Redis lock and calls fn while holding it.
+// Retries with exponential backoff (50 ms → 100 ms → … capped at 5 s) up to deadline.
+func (o *redisTaskOps) withLock(ctx context.Context, deadline time.Duration, fn func() error) error {
+	const lockTTL = 30 * time.Second
+	holder := o.lockHolder()
+	delay := 50 * time.Millisecond
+	start := time.Now()
+
+	for {
+		acquired, err := o.rdb.SetNX(ctx, lockKey(o.taskID), holder, lockTTL).Result()
+		if err != nil {
+			return fmt.Errorf("acquire lock for task %s: %w", o.taskID, err)
+		}
+		if acquired {
+			break
+		}
+
+		if time.Since(start) >= deadline {
+			return fmt.Errorf("failed to acquire lock for task %s within %s", o.taskID, deadline)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		delay *= 2
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+	}
+
+	defer o.releaseLock(holder)
+	return fn()
+}
+
+func (o *redisTaskOps) ensureProvisioned(fn func() error) error {
+	ctx := context.Background()
+	return o.withLock(ctx, 30*time.Second, func() error {
+		provisioned, err := o.rdb.HGet(ctx, taskKey(o.taskID), "provisioned").Result()
+		if err != nil && err != redis.Nil {
+			return fmt.Errorf("check provisioned for task %s: %w", o.taskID, err)
+		}
+		if provisioned == "1" {
+			return nil
+		}
+		if err := fn(); err != nil {
+			return err
+		}
+		// Verify fn() actually persisted the running state before committing provisioned=1.
+		// This catches silent failures in persistRunning and prevents the task from being
+		// stuck as provisioned=1 with no sandbox, which would block all future retries.
+		state, err := o.rdb.HGet(ctx, taskKey(o.taskID), "state").Result()
+		if err != nil && err != redis.Nil {
+			return fmt.Errorf("verify state for task %s after provisioning: %w", o.taskID, err)
+		}
+		if state != strconv.Itoa(int(StateRunning)) {
+			return fmt.Errorf("task %s: provisioning completed but state not persisted (got %q, want %q)",
+				o.taskID, state, strconv.Itoa(int(StateRunning)))
+		}
+		if err := o.rdb.HSet(ctx, taskKey(o.taskID), "provisioned", "1").Err(); err != nil {
+			return fmt.Errorf("set provisioned for task %s: %w", o.taskID, err)
+		}
+		return nil
+	})
+}
+
+func (o *redisTaskOps) resetIfExpired(isAlive func(string) (bool, error)) (bool, error) {
+	ctx := context.Background()
+	var wasReset bool
+
+	err := o.withLock(ctx, 5*time.Second, func() error {
+		provisioned, err := o.rdb.HGet(ctx, taskKey(o.taskID), "provisioned").Result()
+		if err != nil && err != redis.Nil {
+			return fmt.Errorf("check provisioned for task %s: %w", o.taskID, err)
+		}
+		if err == redis.Nil || provisioned != "1" {
+			return nil
+		}
+
+		sandboxID, err := o.rdb.HGet(ctx, taskKey(o.taskID), "sandbox_id").Result()
+		if err != nil && err != redis.Nil {
+			return fmt.Errorf("get sandbox_id for task %s: %w", o.taskID, err)
+		}
+		if err == redis.Nil || sandboxID == "" {
+			return nil
+		}
+
+		alive, err := isAlive(sandboxID)
+		if err != nil {
+			return err
+		}
+
+		if !alive {
+			if err := o.rdb.HSet(ctx, taskKey(o.taskID),
+				"state", int(StateNew),
+				"sandbox_id", "",
+				"proxy_base_url", "",
+				"proxy_headers", "{}",
+				"provisioned", "0",
+			).Err(); err != nil {
+				return fmt.Errorf("reset task %s: %w", o.taskID, err)
+			}
+			wasReset = true
+		}
+		return nil
+	})
+
+	return wasReset, err
+}
+
+func (o *redisTaskOps) resetForReprovisioning() {
+	ctx := context.Background()
+	if err := o.withLock(ctx, 30*time.Second, func() error {
+		return o.rdb.HSet(ctx, taskKey(o.taskID),
+			"state", int(StateNew),
+			"sandbox_id", "",
+			"proxy_base_url", "",
+			"proxy_headers", "{}",
+			"provisioned", "0",
+		).Err()
+	}); err != nil {
+		log.Printf("redis: reset for reprovisioning task %s: %v", o.taskID, err)
+	}
+}

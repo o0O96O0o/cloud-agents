@@ -14,6 +14,9 @@ import (
 	"github.com/your-org/platform-backend/internal/task"
 )
 
+// Compile-time check that mockStore satisfies task.Repository (= TaskStore).
+var _ task.Repository = (*mockStore)(nil)
+
 // ---- mock types ----
 
 type mockStore struct {
@@ -21,24 +24,24 @@ type mockStore struct {
 	task *task.Task
 }
 
-func (m *mockStore) Create(username string, env map[string]string) *task.Task {
+func (m *mockStore) Create(_ context.Context, username string, env map[string]string) (*task.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := task.NewStore()
 	m.task = s.Create(username, env)
-	return m.task
+	return m.task, nil
 }
 
-func (m *mockStore) Get(id string) *task.Task {
+func (m *mockStore) Get(_ context.Context, id string) (*task.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.task != nil && m.task.ID == id {
-		return m.task
+		return m.task, nil
 	}
-	return nil
+	return nil, nil
 }
 
-func (m *mockStore) Delete(_ string) {}
+func (m *mockStore) Delete(_ context.Context, _ string) error { return nil }
 
 type mockManager struct {
 	provisionErr error
@@ -77,7 +80,7 @@ func taskWithSandbox(sandboxID, sessionID string) *task.Task {
 	t := s.Create("", nil)
 	t.SetRunning(sandboxID, "http://proxy/", map[string]string{})
 	if sessionID != "" {
-		t.SetAgentSessionID(sessionID)
+		t.SetSessionID(sessionID)
 	}
 	return t
 }
@@ -186,14 +189,44 @@ func TestGetTask_Found(t *testing.T) {
 	}
 	var body map[string]any
 	json.NewDecoder(rw.Body).Decode(&body)
-	if body["sandbox_state"] != "running" {
-		t.Errorf("expected sandbox_state=running, got %v", body["sandbox_state"])
+	// sandbox running + session set → state "active"
+	if body["state"] != "active" {
+		t.Errorf("expected state=active, got %v", body["state"])
 	}
 	if body["sandbox_id"] != "sb-1" {
 		t.Errorf("expected sandbox_id=sb-1, got %v", body["sandbox_id"])
 	}
-	if body["agent_session_id"] != "sess-1" {
-		t.Errorf("expected agent_session_id=sess-1, got %v", body["agent_session_id"])
+	if body["session_id"] != "sess-1" {
+		t.Errorf("expected session_id=sess-1, got %v", body["session_id"])
+	}
+}
+
+// TestGetTask_Paused verifies that after a sandbox is destroyed the task reports
+// state="paused" while retaining sandbox_id="" and the original session_id.
+func TestGetTask_Paused(t *testing.T) {
+	tsk := taskWithSandbox("sb-1", "sess-1")
+	tsk.ResetForReprovisioning() // simulate sandbox destruction
+	store := &mockStore{task: tsk}
+	h := newHandler(store, &mockManager{}, &mockProxy{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+tsk.ID, nil)
+	req.SetPathValue("id", tsk.ID)
+	rw := httptest.NewRecorder()
+	h.GetTask(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	var body map[string]any
+	json.NewDecoder(rw.Body).Decode(&body)
+	if body["state"] != "paused" {
+		t.Errorf("expected state=paused after sandbox destroy, got %v", body["state"])
+	}
+	if body["sandbox_id"] != "" {
+		t.Errorf("expected sandbox_id empty after destroy, got %v", body["sandbox_id"])
+	}
+	if body["session_id"] != "sess-1" {
+		t.Errorf("expected session_id retained after destroy, got %v", body["session_id"])
 	}
 }
 
