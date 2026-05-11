@@ -11,8 +11,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/your-org/platform-backend/internal/task"
 )
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
 
 // Compile-time check that mockStore satisfies task.Repository (= TaskStore).
 var _ task.Repository = (*mockStore)(nil)
@@ -103,17 +108,13 @@ func TestCreateTask_NoBody(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
 	rw := httptest.NewRecorder()
-	h.CreateTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	h.CreateTask(c)
 
-	if rw.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", rw.Code)
-	}
-	var body map[string]string
-	json.NewDecoder(rw.Body).Decode(&body)
-	if body["id"] == "" {
-		t.Error("expected non-empty id in response")
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rw.Code)
 	}
 }
 
@@ -121,10 +122,11 @@ func TestCreateTask_WithEnv(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
-		strings.NewReader(`{"env":{"FOO":"bar"}}`))
 	rw := httptest.NewRecorder()
-	h.CreateTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks",
+		strings.NewReader(`{"env":{"FOO":"bar"}}`))
+	h.CreateTask(c)
 
 	if rw.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rw.Code)
@@ -141,10 +143,11 @@ func TestCreateTask_WithUsername(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
-		strings.NewReader(`{"username":"alice"}`))
 	rw := httptest.NewRecorder()
-	h.CreateTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks",
+		strings.NewReader(`{"username":"alice"}`))
+	h.CreateTask(c)
 
 	if rw.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rw.Code)
@@ -161,14 +164,14 @@ func TestCreateTask_InvalidJSON(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
-		strings.NewReader(`{bad json`))
 	rw := httptest.NewRecorder()
-	h.CreateTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks",
+		strings.NewReader(`{bad json`))
+	h.CreateTask(c)
 
-	// Invalid JSON is ignored; task still created.
-	if rw.Code != http.StatusCreated {
-		t.Fatalf("expected 201 even with bad JSON, got %d", rw.Code)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rw.Code)
 	}
 }
 
@@ -179,10 +182,11 @@ func TestGetTask_Found(t *testing.T) {
 	store := &mockStore{task: tsk}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+tsk.ID, nil)
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.GetTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/tasks/"+tsk.ID, nil)
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.GetTask(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)
@@ -209,10 +213,11 @@ func TestGetTask_Paused(t *testing.T) {
 	store := &mockStore{task: tsk}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+tsk.ID, nil)
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.GetTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/tasks/"+tsk.ID, nil)
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.GetTask(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)
@@ -234,10 +239,11 @@ func TestGetTask_NotFound(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tasks/missing", nil)
-	req.SetPathValue("id", "missing")
 	rw := httptest.NewRecorder()
-	h.GetTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/tasks/missing", nil)
+	c.Params = gin.Params{{Key: "id", Value: "missing"}}
+	h.GetTask(c)
 
 	if rw.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rw.Code)
@@ -250,11 +256,12 @@ func TestSendMessage_NotFound(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/missing/messages",
-		strings.NewReader(`{"prompt":"hi"}`))
-	req.SetPathValue("id", "missing")
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/missing/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	c.Params = gin.Params{{Key: "id", Value: "missing"}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rw.Code)
@@ -266,11 +273,12 @@ func TestSendMessage_EmptyPrompt(t *testing.T) {
 	store := &mockStore{task: tsk}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":""}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":""}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rw.Code)
@@ -282,11 +290,12 @@ func TestSendMessage_NoPromptField(t *testing.T) {
 	store := &mockStore{task: tsk}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rw.Code)
@@ -300,11 +309,12 @@ func TestSendMessage_ProvisionError(t *testing.T) {
 	mgr := &mockManager{provisionErr: errors.New("quota exceeded")}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hi"}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rw.Code)
@@ -320,11 +330,12 @@ func TestSendMessage_Success(t *testing.T) {
 	store := &mockStore{task: tsk}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hello"}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hello"}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)
@@ -341,13 +352,12 @@ func TestSendMessage_ClientDisconnect(t *testing.T) {
 
 	h := newHandler(store, &mockManager{}, &mockProxy{err: nil})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hi"}`))
-	req = req.WithContext(ctx)
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`)).WithContext(ctx)
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 }
 
 func TestSendMessage_ProvisionCalledOnce(t *testing.T) {
@@ -362,11 +372,12 @@ func TestSendMessage_ProvisionCalledOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-				strings.NewReader(`{"prompt":"hi"}`))
-			req.SetPathValue("id", tsk.ID)
 			rw := httptest.NewRecorder()
-			h.SendMessage(rw, req)
+			c, _ := gin.CreateTestContext(rw)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+				strings.NewReader(`{"prompt":"hi"}`))
+			c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+			h.SendMessage(c)
 		}()
 	}
 	wg.Wait()
@@ -382,11 +393,12 @@ func TestSendMessage_SandboxAlive_NoReprovision(t *testing.T) {
 	mgr := &mockManager{sandboxAlive: true}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hi"}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)
@@ -402,11 +414,12 @@ func TestSendMessage_SandboxExpired_Reprovisions(t *testing.T) {
 	mgr := &mockManager{sandboxAlive: false}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hello after expiry"}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hello after expiry"}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200 after re-provision, got %d", rw.Code)
@@ -422,11 +435,12 @@ func TestSendMessage_SandboxAliveCheckError_Continues(t *testing.T) {
 	mgr := &mockManager{sandboxAlive: false, aliveErr: errors.New("network timeout")}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hi"}`))
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.SendMessage(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
+		strings.NewReader(`{"prompt":"hi"}`))
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.SendMessage(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200 when alive check errors, got %d", rw.Code)
@@ -442,10 +456,11 @@ func TestDeleteTask_NotFound(t *testing.T) {
 	store := &mockStore{}
 	h := newHandler(store, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/missing", nil)
-	req.SetPathValue("id", "missing")
 	rw := httptest.NewRecorder()
-	h.DeleteTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/tasks/missing", nil)
+	c.Params = gin.Params{{Key: "id", Value: "missing"}}
+	h.DeleteTask(c)
 
 	if rw.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rw.Code)
@@ -459,10 +474,11 @@ func TestDeleteTask_NoSandbox(t *testing.T) {
 	mgr := &mockManager{}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+tsk.ID, nil)
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.DeleteTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/tasks/"+tsk.ID, nil)
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.DeleteTask(c)
 
 	if rw.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d", rw.Code)
@@ -479,10 +495,11 @@ func TestDeleteTask_WithSandbox(t *testing.T) {
 	mgr := &deletingManager{onDelete: func(id string) { deletedID = id }}
 	h := newHandler(store, mgr, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+tsk.ID, nil)
-	req.SetPathValue("id", tsk.ID)
 	rw := httptest.NewRecorder()
-	h.DeleteTask(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/tasks/"+tsk.ID, nil)
+	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
+	h.DeleteTask(c)
 
 	if rw.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d", rw.Code)
@@ -513,9 +530,10 @@ func (m *deletingManager) IsSandboxAlive(_ context.Context, _ string) (bool, err
 func TestHealth(t *testing.T) {
 	h := newHandler(&mockStore{}, &mockManager{}, &mockProxy{})
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rw := httptest.NewRecorder()
-	h.Health(rw, req)
+	c, _ := gin.CreateTestContext(rw)
+	c.Request = httptest.NewRequest(http.MethodGet, "/health", nil)
+	h.Health(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)

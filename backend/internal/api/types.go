@@ -10,7 +10,7 @@ type createTaskResponse struct {
 }
 
 type sendMessageRequest struct {
-	Prompt string `json:"prompt"`
+	Prompt string `json:"prompt" binding:"required"`
 }
 
 type getTaskResponse struct {

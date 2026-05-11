@@ -2,11 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/your-org/platform-backend/internal/storage"
 	"github.com/your-org/platform-backend/internal/task"
 )
@@ -59,68 +59,50 @@ func NewHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy, fileSto
 }
 
 // CreateTask handles POST /api/tasks.
-//
-// Request body (optional JSON):
-//
-//	{ "username": "alice", "env": { "KEY": "VALUE" } }
-//
-// Response 201 JSON:
-//
-//	{ "id": "<task-id>" }
-func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) CreateTask(c *gin.Context) {
 	var body createTaskRequest
-	// body is optional — ignore decode errors
-	json.NewDecoder(r.Body).Decode(&body)
-
-	t, err := h.store.Create(r.Context(), body.Username, body.Env)
-	if err != nil {
-		log.Printf("create task: %v", err)
-		http.Error(w, "failed to create task", http.StatusInternalServerError)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.String(http.StatusBadRequest, "invalid request body")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(createTaskResponse{ID: t.ID})
+
+	t, err := h.store.Create(c.Request.Context(), body.Username, body.Env)
+	if err != nil {
+		log.Printf("create task: %v", err)
+		c.String(http.StatusInternalServerError, "failed to create task")
+		return
+	}
+	c.JSON(http.StatusCreated, createTaskResponse{ID: t.ID})
 }
 
-// SendMessage handles POST /api/tasks/{id}/messages.
+// SendMessage handles POST /api/tasks/:id/messages.
 //
 // Lazily provisions the task's sandbox on first use, then streams the
 // assistant response back to the caller. Provisioning runs under a background
 // context so that a client disconnect does not abort it.
-//
-// Request body (JSON):
-//
-//	{ "prompt": "<user message>" }
-//
-// Response: streamed assistant output (content-type set by the proxy).
-// Errors:
-//   - 400 Bad Request  – prompt missing or body unreadable
-//   - 404 Not Found    – unknown task ID
-//   - 502 Bad Gateway  – sandbox provisioning failed
-func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	t, err := h.store.Get(r.Context(), id)
+func (h *Handler) SendMessage(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("get task %s: %v", id, err)
-		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to get task")
 		return
 	}
 	if t == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+		c.String(http.StatusNotFound, "task not found")
 		return
 	}
 
 	var body sendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.String(http.StatusBadRequest, "prompt is required")
 		return
 	}
 
 	// Sandboxes expire silently via TTL. ResetIfExpired checks liveness under the
 	// provisioning lock so a concurrent re-provision cannot be stomped by a racing reset.
 	if err := t.ResetIfExpired(func(sandboxID string) (bool, error) {
-		aliveCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		aliveCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
 		alive, err := h.manager.IsSandboxAlive(aliveCtx, sandboxID)
 		if err != nil {
@@ -147,48 +129,34 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		t.SetError()
 		log.Printf("provision failed for task %s: %v", id, err)
-		http.Error(w, "failed to provision sandbox", http.StatusBadGateway)
+		c.String(http.StatusBadGateway, "failed to provision sandbox")
 		return
 	}
 
-	if err := h.proxy.StreamMessage(r.Context(), t, body.Prompt, w); err != nil {
-		if r.Context().Err() != nil {
+	if err := h.proxy.StreamMessage(c.Request.Context(), t, body.Prompt, c.Writer); err != nil {
+		if c.Request.Context().Err() != nil {
 			return // client disconnected
 		}
 		log.Printf("stream error for task %s: %v", id, err)
 	}
 }
 
-// GetTask handles GET /api/tasks/{id}.
-//
-// Response 200 JSON:
-//
-//	{
-//	  "id":         "<task-id>",
-//	  "username":   "<username>",
-//	  "state":      "pending|provisioning|idle|active|paused|resuming|error",
-//	  "sandbox_id": "<sandbox-id or empty>",
-//	  "session_id": "<session-id or empty>"
-//	}
-//
-// Errors:
-//   - 404 Not Found – unknown task ID
-func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	t, err := h.store.Get(r.Context(), id)
+// GetTask handles GET /api/tasks/:id.
+func (h *Handler) GetTask(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("get task %s: %v", id, err)
-		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to get task")
 		return
 	}
 	if t == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+		c.String(http.StatusNotFound, "task not found")
 		return
 	}
 
 	_, sandboxID, sessionID, stateStr := t.Info()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(getTaskResponse{
+	c.JSON(http.StatusOK, getTaskResponse{
 		ID:        id,
 		Username:  t.Username,
 		State:     stateStr,
@@ -197,31 +165,24 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteTask handles DELETE /api/tasks/{id}.
-//
-// Removes the task from the store and asynchronously destroys its sandbox.
-// Sandbox deletion errors are logged but do not affect the response.
-//
-// Response 204 No Content on success.
-// Errors:
-//   - 404 Not Found – unknown task ID
-func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	t, err := h.store.Get(r.Context(), id)
+// DeleteTask handles DELETE /api/tasks/:id.
+func (h *Handler) DeleteTask(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("get task %s: %v", id, err)
-		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to get task")
 		return
 	}
 	if t == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+		c.String(http.StatusNotFound, "task not found")
 		return
 	}
 
 	sandboxID := t.GetSandboxID()
-	if err := h.store.Delete(r.Context(), id); err != nil {
+	if err := h.store.Delete(c.Request.Context(), id); err != nil {
 		log.Printf("delete task %s: %v", id, err)
-		http.Error(w, "failed to delete task", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to delete task")
 		return
 	}
 
@@ -231,50 +192,42 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
+	c.Writer.WriteHeaderNow()
 }
 
-// GetTaskHistory handles GET /api/tasks/{id}/history.
-//
-// Returns the full conversation history stored in OFS for the task.
-//
-// Response 200 JSON: array of ConversationEntry objects (may be empty if no
-// history has been written yet).
-// Errors:
-//   - 404 Not Found           – unknown task ID
-//   - 503 Service Unavailable – file storage not configured
-//   - 500 Internal Error      – storage read failure
-func (h *Handler) GetTaskHistory(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	t, err := h.store.Get(r.Context(), id)
+// GetTaskHistory handles GET /api/tasks/:id/history.
+func (h *Handler) GetTaskHistory(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("get task %s: %v", id, err)
-		http.Error(w, "failed to get task", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to get task")
 		return
 	}
 	if t == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+		c.String(http.StatusNotFound, "task not found")
 		return
 	}
 
 	if h.fileStore == nil {
-		http.Error(w, "history storage not configured", http.StatusServiceUnavailable)
+		c.String(http.StatusServiceUnavailable, "history storage not configured")
 		return
 	}
 
-	keys, err := h.fileStore.ListHistory(r.Context(), t.Username, id)
+	keys, err := h.fileStore.ListHistory(c.Request.Context(), t.Username, id)
 	if err != nil {
 		log.Printf("list history for task %s: %v", id, err)
-		http.Error(w, "failed to list history", http.StatusInternalServerError)
+		c.String(http.StatusInternalServerError, "failed to list history")
 		return
 	}
 
 	entries := make([]storage.ConversationEntry, 0)
 	if len(keys) > 0 {
-		entries, err = h.fileStore.GetHistory(r.Context(), keys[0])
+		entries, err = h.fileStore.GetHistory(c.Request.Context(), keys[0])
 		if err != nil {
 			log.Printf("get history for task %s: %v", id, err)
-			http.Error(w, "failed to get history", http.StatusInternalServerError)
+			c.String(http.StatusInternalServerError, "failed to get history")
 			return
 		}
 		if entries == nil {
@@ -282,16 +235,10 @@ func (h *Handler) GetTaskHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(entries)
+	c.JSON(http.StatusOK, entries)
 }
 
 // Health handles GET /health.
-//
-// Response 200 JSON:
-//
-//	{ "status": "ok" }
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(healthResponse{Status: "ok"})
+func (h *Handler) Health(c *gin.Context) {
+	c.JSON(http.StatusOK, healthResponse{Status: "ok"})
 }
