@@ -21,10 +21,12 @@ type ServerConfig struct {
 }
 
 type SandboxConfig struct {
-	ServerURL string          `yaml:"server_url"`
-	APIKey    string          `yaml:"api_key"`
-	Image     string          `yaml:"image"`
-	Platform  *PlatformConfig `yaml:"platform"`
+	ServerURL   string          `yaml:"server_url"`
+	APIKey      string          `yaml:"api_key"`
+	Image       string          `yaml:"image"`
+	Platform    *PlatformConfig `yaml:"platform"`
+	MemoryLimit string          `yaml:"memory_limit"` // e.g. "4Gi"; defaults to "4Gi" if empty
+	CPULimit    string          `yaml:"cpu_limit"`    // e.g. "2000m"; defaults to "2000m" if empty
 }
 
 type PlatformConfig struct {

@@ -16,23 +16,42 @@ import (
 
 // agentQueryOptions mirrors the QueryOptions schema accepted by claude-agent-server.
 type agentQueryOptions struct {
-	CWD                  string   `json:"cwd,omitempty"`
-	Model                string   `json:"model,omitempty"`
-	PermissionMode       string   `json:"permissionMode,omitempty"`
-	SystemPrompt         string   `json:"systemPrompt,omitempty"`
-	AppendSystemPrompt   string   `json:"appendSystemPrompt,omitempty"`
-	AllowedTools         []string `json:"allowedTools,omitempty"`
-	DisallowedTools      []string `json:"disallowedTools,omitempty"`
+	CWD                   string   `json:"cwd,omitempty"`
+	Model                 string   `json:"model,omitempty"`
+	PermissionMode        string   `json:"permissionMode,omitempty"`
+	SettingSources        []string `json:"settingSources,omitempty"`
+	SystemPrompt          string   `json:"systemPrompt,omitempty"`
+	AppendSystemPrompt    string   `json:"appendSystemPrompt,omitempty"`
+	AllowedTools          []string `json:"allowedTools,omitempty"`
+	DisallowedTools       []string `json:"disallowedTools,omitempty"`
 	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
-	MaxTurns             int      `json:"maxTurns,omitempty"`
-	EnableFileCheckpointing bool  `json:"enableFileCheckpointing,omitempty"`
+	// Tools is either []string or ToolsPreset marshaled to JSON.
+	Tools                   json.RawMessage `json:"tools,omitempty"`
+	MaxTurns                int             `json:"maxTurns,omitempty"`
+	EnableFileCheckpointing bool            `json:"enableFileCheckpointing,omitempty"`
 }
 
-// agentRequest is the body for both POST /sessions and POST /sessions/:id/messages.
-type agentRequest struct {
-	Prompt  string            `json:"prompt"`
-	Stream  bool              `json:"stream"`
-	Options agentQueryOptions `json:"options,omitempty"`
+// ToolsPreset selects a named tool preset (e.g. {Type:"preset", Preset:"claude_code"}).
+type ToolsPreset struct {
+	Type   string `json:"type"`
+	Preset string `json:"preset"`
+}
+
+// createSessionRequest is the body for POST /sessions.
+type createSessionRequest struct {
+	Prompt                 string            `json:"prompt"`
+	Stream                 bool              `json:"stream"`
+	IncludePartialMessages bool              `json:"includePartialMessages,omitempty"`
+	Options                agentQueryOptions `json:"options,omitempty"`
+}
+
+// sendMessageRequest is the body for POST /sessions/:id/messages.
+type sendMessageRequest struct {
+	Prompt                 string            `json:"prompt"`
+	Stream                 bool              `json:"stream"`
+	IncludePartialMessages bool              `json:"includePartialMessages,omitempty"`
+	ForkSession            bool              `json:"forkSession,omitempty"`
+	Options                agentQueryOptions `json:"options,omitempty"`
 }
 
 type Proxy struct {
@@ -57,11 +76,14 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 		upstreamURL = proxyBaseURL + "/sessions/" + sessionID + "/messages"
 	}
 
-	body, err := json.Marshal(agentRequest{
-		Prompt:  prompt,
-		Stream:  true,
-		Options: agentQueryOptions{CWD: fmt.Sprintf("/workspace/%s/%s", t.Username, t.ID)},
-	})
+	opts := agentQueryOptions{CWD: fmt.Sprintf("/workspace/%s/%s", t.Username, t.ID)}
+	var reqBody any
+	if sessionID == "" {
+		reqBody = createSessionRequest{Prompt: prompt, Stream: true, Options: opts}
+	} else {
+		reqBody = sendMessageRequest{Prompt: prompt, Stream: true, Options: opts, IncludePartialMessages: true, ForkSession: false}
+	}
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal body: %w", err)
 	}

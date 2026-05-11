@@ -28,6 +28,11 @@ type healthChecker interface {
 	WaitForHealth(ctx context.Context, proxyBaseURL string, headers map[string]string) error
 }
 
+const (
+	defaultMemoryLimit = "4Gi"
+	defaultCPULimit    = "2000m"
+)
+
 type Manager struct {
 	lc            lifecycleClient
 	serverURL     string
@@ -35,11 +40,19 @@ type Manager struct {
 	baseEnv       map[string]string
 	sandboxImage  string
 	platform      *PlatformSpec
+	memoryLimit   string
+	cpuLimit      string
 	agentPort     int
 	healthChecker healthChecker
 }
 
-func NewManager(serverURL, apiKey string, baseEnv map[string]string, image string, platform *PlatformSpec) *Manager {
+func NewManager(serverURL, apiKey string, baseEnv map[string]string, image string, platform *PlatformSpec, memoryLimit, cpuLimit string) *Manager {
+	if memoryLimit == "" {
+		memoryLimit = defaultMemoryLimit
+	}
+	if cpuLimit == "" {
+		cpuLimit = defaultCPULimit
+	}
 	return &Manager{
 		lc:            newAPILifecycleClient(serverURL, apiKey),
 		serverURL:     serverURL,
@@ -47,6 +60,8 @@ func NewManager(serverURL, apiKey string, baseEnv map[string]string, image strin
 		baseEnv:       baseEnv,
 		sandboxImage:  image,
 		platform:      platform,
+		memoryLimit:   memoryLimit,
+		cpuLimit:      cpuLimit,
 		agentPort:     DefaultAgentPort,
 		healthChecker: newHTTPHealthChecker(&http.Client{Timeout: 5 * time.Second}),
 	}
@@ -73,7 +88,7 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 		Platform:       m.platform,
 		Entrypoint:     []string{"/entrypoint.sh"},
 		Timeout:        &timeout,
-		ResourceLimits: ResourceLimits{"cpu": "500m", "memory": "512Mi"},
+		ResourceLimits: ResourceLimits{"cpu": m.cpuLimit, "memory": m.memoryLimit},
 		Env:            env,
 	})
 	if err != nil {

@@ -78,7 +78,7 @@ func main() {
 		log.Printf("task store: in-memory (set redis.url in config to enable persistence)")
 	}
 
-	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform)
+	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform, cfg.Sandbox.MemoryLimit, cfg.Sandbox.CPULimit)
 	router := api.NewRouter(repo, mgr, cfg.Server.CORSOrigin, ofsClient)
 
 	log.Printf("listening on :%s", cfg.Server.Port)

@@ -125,7 +125,7 @@ func TestCreateTask_WithEnv(t *testing.T) {
 	rw := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rw)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks",
-		strings.NewReader(`{"env":{"FOO":"bar"}}`))
+		strings.NewReader(`{"username":"testuser","env":{"FOO":"bar"}}`))
 	h.CreateTask(c)
 
 	if rw.Code != http.StatusCreated {
@@ -369,16 +369,14 @@ func TestSendMessage_ProvisionCalledOnce(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			rw := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rw)
 			c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
 				strings.NewReader(`{"prompt":"hi"}`))
 			c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
 			h.SendMessage(c)
-		}()
+		})
 	}
 	wg.Wait()
 

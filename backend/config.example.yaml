@@ -7,6 +7,10 @@ sandbox:
   api_key: your-opensandbox-api-key
   server_url: "http://localhost:8080"
   image: "opensandbox/claude-agent-server:latest"
+  # Resource limits for sandbox containers. Claude Code needs ~1-2Gi memory and ~1-2 CPU cores.
+  # Both default to "4Gi" / "2000m" if omitted.
+  memory_limit: "4Gi"
+  cpu_limit: "2000m"
   # Optional — both os and arch must be set to take effect
   # platform:
   #   os: linux

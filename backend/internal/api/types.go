@@ -1,7 +1,7 @@
 package api
 
 type createTaskRequest struct {
-	Username string            `json:"username,omitempty"`
+	Username string            `json:"username" binding:"required"`
 	Env      map[string]string `json:"env,omitempty"`
 }
 

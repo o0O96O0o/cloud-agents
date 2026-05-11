@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { createConversation, sendMessage as apiSendMessage } from '@/api/client'
+import { createTask, sendMessage as apiSendMessage } from '@/api/client'
 import type { Message, SandboxState, ToolActivity } from '@/types'
 
 async function* parseSSE(response: Response) {
@@ -30,19 +30,19 @@ function makeId() {
   return Math.random().toString(36).slice(2)
 }
 
-export function useChat() {
+export function useChat(username: string) {
   const [messages, setMessages] = useState<Message[]>([])
-  const [convId, setConvId] = useState<string | null>(null)
+  const [taskId, setTaskId] = useState<string | null>(null)
   const [sandboxState, setSandboxState] = useState<SandboxState>('idle')
   const [sending, setSending] = useState(false)
 
   const sendMessage = useCallback(async (prompt: string) => {
     setSending(true)
 
-    let id = convId
+    let id = taskId
     if (!id) {
-      id = await createConversation()
-      setConvId(id)
+      id = await createTask(username)
+      setTaskId(id)
     }
 
     const userMsgId = makeId()
@@ -157,7 +157,7 @@ export function useChat() {
       setSandboxState('error')
       setSending(false)
     }
-  }, [convId])
+  }, [taskId, username])
 
   return { messages, sandboxState, sending, sendMessage }
 }

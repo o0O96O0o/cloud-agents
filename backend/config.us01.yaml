@@ -8,6 +8,8 @@ sandbox:
   server_url: "http://agent-server.llab.intra.xiaojukeji.com/8090"
   image: "opensandbox/code-interpreter:local"
   # Optional — both os and arch must be set to take effect
+  memory_limit: "4Gi"
+  cpu_limit: "2000m"
   platform:
     os: "linux"
     arch: "amd64"
