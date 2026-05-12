@@ -23,13 +23,19 @@ func proxyTask(baseURL string, headers map[string]string, sessionID string) *tas
 }
 
 func TestStreamMessage_NewSession(t *testing.T) {
-	var capturedPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedPath = r.URL.Path
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: session.init\n")
-		fmt.Fprint(w, `data: {"sessionId":"abc123"}`+"\n")
-		fmt.Fprint(w, "\n")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/sessions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: session.init\n")
+			fmt.Fprint(w, `data: {"sessionId":"abc123"}`+"\n")
+			fmt.Fprint(w, "\n")
+		case r.Method == http.MethodGet && r.URL.Path == "/sessions/abc123":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"session":{"summary":"My task","customTitle":null,"firstPrompt":"hello"}}`)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer upstream.Close()
 
@@ -41,11 +47,11 @@ func TestStreamMessage_NewSession(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capturedPath != "/sessions" {
-		t.Errorf("expected path /sessions, got %q", capturedPath)
-	}
 	if tsk.GetSessionID() != "abc123" {
 		t.Errorf("expected sessionID=abc123, got %q", tsk.GetSessionID())
+	}
+	if tsk.GetTitle() != "My task" {
+		t.Errorf("expected title=My task, got %q", tsk.GetTitle())
 	}
 	body := rw.Body.String()
 	if !strings.Contains(body, "session.init") {

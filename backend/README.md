@@ -49,10 +49,8 @@ anthropic:
   model: ""                        # optional — injected as ANTHROPIC_MODEL
   disable_experimental_betas: ""   # set to "1" to disable
 
-# Task store — omit or leave url empty to use the in-memory store (lost on restart).
-# Set url to enable Redis persistence across restarts and multiple instances.
 redis:
-  url: ""  # e.g. redis://localhost:6379
+  url: "redis://localhost:6379"  # required — sandbox mapping + distributed locks
 
 orangefs:
   addr: ""        # optional — injected as ORANGEFS_RS_ADDR
@@ -92,22 +90,27 @@ See `config.example.yaml` for the full annotated template and [docs/specs/config
 
 ### Prerequisites
 
-Before starting the server, create the database:
+Before starting the server, create the database and ensure Redis is running:
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS l_lab CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 ```
 
-`db.Open` runs `AutoMigrate` on startup to create/update the `users` table automatically.
+`db.Open` runs `AutoMigrate` on startup to create/update the `users` and `tasks` tables automatically.
 
-### Task store selection at startup
+### Storage
 
-| `redis.url` | Store used | Persistence |
-|---|---|---|
-| empty (default) | In-memory (`MemoryRepository`) | Lost on restart |
-| set | Redis (`RedisRepository`) | Survives restarts; shared across instances |
+Both MySQL and Redis are **required**. The server exits at startup if either is absent or unreachable.
 
-When Redis is configured the server pings it at startup and exits immediately if unreachable.
+| Store | What it holds |
+|---|---|
+| **MySQL** (`tasks` table) | Durable task fields: id, username, state, title, session_id, extra_env, provisioned |
+| **Redis** (`sandbox:{id}`) | Ephemeral sandbox routing: sandbox_id, proxy_base_url, proxy_headers (7-day TTL) |
+| **Redis** (`task-lock:{id}`) | Distributed provisioning lock (30 s TTL, auto-released on crash) |
+
+Without Redis configured, the server falls back to `MemoryRepository` (dev only — all task state lost on restart).
+
+See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full storage architecture and lifecycle walkthrough.
 
 ---
 
@@ -127,8 +130,9 @@ backend/
 │   │   ├── middleware.go          # BearerAuth Gin middleware
 │   │   └── context.go             # set/get *db.User on gin.Context
 │   ├── db/
-│   │   ├── mysql.go               # db.Open + AutoMigrate
-│   │   └── user.go                # User model, FindOrCreate, FindByCredentials, AuthSource constants
+│   │   ├── mysql.go               # db.Open + AutoMigrate (users + tasks)
+│   │   ├── user.go                # User model, FindOrCreate, FindByCredentials, AuthSource constants
+│   │   └── task.go                # Task model (persistent fields)
 │   ├── oidc/
 │   │   ├── service.go             # go-oidc wrapper: discovery, AuthURL, ExchangeCode, VerifyIDToken
 │   │   └── handlers.go            # login, callback, cli-login, cli-callback, cli-poll
@@ -144,7 +148,9 @@ backend/
 │   └── task/
 │       ├── repository.go          # Repository interface + taskOps interface
 │       ├── store.go               # Task struct, in-process mutation methods, MemoryRepository
-│       └── redis_repository.go    # RedisRepository + distributed lock (redisTaskOps)
+│       ├── redis_lock.go          # redisLock struct (SetNX/Lua locking, shared helper)
+│       ├── redis_repository.go    # RedisRepository (legacy) + redisTaskOps
+│       └── mysql_repository.go    # MySQLRepository (production) + mysqlTaskOps
 ├── pkg/
 │   ├── config/
 │   │   └── config.go              # YAML config loader with defaults
@@ -212,11 +218,14 @@ Interactive docs (Swagger UI) available at **`http://localhost:8081/swagger/inde
   "username": "alice",
   "state": "active",
   "sandbox_id": "sb-xyz",
-  "session_id": "sess-abc"
+  "session_id": "sess-abc",
+  "title": "Refactor authentication module"
 }
 ```
 
 `state` values: `pending` · `provisioning` · `idle` · `active` · `paused` · `resuming` · `error`
+
+`title` is set automatically after the first session stream completes, using the sandbox session's `summary` → `customTitle` → `firstPrompt` → original prompt as the fallback chain.
 
 See [docs/specs/resource-mapping.md](docs/specs/resource-mapping.md) for the full state table.
 
@@ -333,21 +342,19 @@ If the sandbox has expired, all sandbox fields (`state`, `sandbox_id`, `proxy_ba
 
 ### Task persistence
 
-Task state is stored in one of two backends, selected at startup:
+| Backend | Durable fields | Ephemeral fields | Locking |
+|---|---|---|---|
+| `MemoryRepository` (dev) | `map[string]*Task` | same map | `sync.RWMutex` + per-task `sync.Mutex` |
+| `MySQLRepository` (production) | MySQL `tasks` table | Redis `sandbox:{id}` hash | Redis `task-lock:{id}` |
 
-| Backend | Key type | Locking |
-|---|---|---|
-| `MemoryRepository` | `map[string]*Task` | `sync.RWMutex` + per-task `sync.Mutex` |
-| `RedisRepository` | Hash `task:{id}` | Redis lock `task-lock:{id}` |
-
-See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full Redis data model, key operations, and a lifecycle walkthrough.
+See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full storage architecture, key operations, and a lifecycle walkthrough.
 
 ### Session ID (write-once)
 
 `session_id` is extracted from the `session.init` SSE event on the first message and stored on the task. It is **never cleared or replaced** once set (invariant #4 in resource-mapping.md). This enables history reads from OFS even when no sandbox is active.
 
 - In-memory: in-process mutex check (`if sessionID == "" { set }`).
-- Redis: Lua `HSETNX` script enforces atomicity across instances.
+- MySQL: conditional `UPDATE … WHERE session_id = ''`; `RowsAffected == 1` confirms the write.
 
 ### Sandbox environment
 

@@ -54,6 +54,7 @@ type Task struct {
 	// sessionID is the Claude Code UUID from the SSE session.init event.
 	// Null until the first user message; never cleared once set (invariant 4 in resource-mapping.md).
 	sessionID string
+	title     string            // set by the sandbox once the task has a name
 	extraEnv  map[string]string // per-request env vars merged into sandbox at provision time
 
 	// provisionMu serialises provisioning and reset. Lock order: provisionMu → mu.
@@ -138,6 +139,21 @@ func (t *Task) GetSandboxID() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.sandboxID
+}
+
+func (t *Task) GetTitle() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.title
+}
+
+func (t *Task) SetTitle(title string) {
+	t.mu.Lock()
+	t.title = title
+	t.mu.Unlock()
+	if t.ops != nil {
+		t.ops.persistTitle(title)
+	}
 }
 
 func (t *Task) ExtraEnv() map[string]string {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 )
 
 func taskKey(id string) string { return "task:" + id }
-func lockKey(id string) string { return "task-lock:" + id }
 
 // RedisRepository stores tasks as Redis hashes at key task:{id}.
 type RedisRepository struct {
@@ -53,7 +51,7 @@ func (r *RedisRepository) Create(ctx context.Context, username string, extraEnv 
 		state:    StateNew,
 		extraEnv: extraEnv,
 	}
-	t.ops = &redisTaskOps{rdb: r.rdb, taskID: id}
+	t.ops = &redisTaskOps{redisLock{rdb: r.rdb, taskID: id}}
 	return t, nil
 }
 
@@ -106,15 +104,14 @@ func unmarshalTask(rdb *redis.Client, fields map[string]string) (*Task, error) {
 		extraEnv:     extraEnv,
 		provisioned:  fields["provisioned"] == "1",
 	}
-	t.ops = &redisTaskOps{rdb: rdb, taskID: id}
+	t.ops = &redisTaskOps{redisLock{rdb: rdb, taskID: id}}
 	return t, nil
 }
 
 // ---- redisTaskOps implements taskOps ----
 
 type redisTaskOps struct {
-	rdb    *redis.Client
-	taskID string
+	redisLock
 }
 
 func (o *redisTaskOps) persistRunning(sandboxID, proxyBaseURL string, proxyHeaders map[string]string) {
@@ -163,63 +160,9 @@ func (o *redisTaskOps) persistSessionID(sessionID string) bool {
 	return result == 1
 }
 
-// releaseLockScript releases the lock only if the current holder matches.
-var releaseLockScript = redis.NewScript(`
-	if redis.call("GET", KEYS[1]) == ARGV[1] then
-		redis.call("DEL", KEYS[1])
-		return 1
-	end
-	return 0
-`)
 
-func (o *redisTaskOps) lockHolder() string {
-	host, _ := os.Hostname()
-	return fmt.Sprintf("%s:%d", host, os.Getpid())
-}
-
-func (o *redisTaskOps) releaseLock(holder string) {
-	ctx := context.Background()
-	if err := releaseLockScript.Run(ctx, o.rdb, []string{lockKey(o.taskID)}, holder).Err(); err != nil {
-		log.Printf("redis: release lock for task %s: %v", o.taskID, err)
-	}
-}
-
-// withLock acquires the per-task Redis lock and calls fn while holding it.
-// Retries with exponential backoff (50 ms → 100 ms → … capped at 5 s) up to deadline.
-func (o *redisTaskOps) withLock(ctx context.Context, deadline time.Duration, fn func() error) error {
-	const lockTTL = 30 * time.Second
-	holder := o.lockHolder()
-	delay := 50 * time.Millisecond
-	start := time.Now()
-
-	for {
-		acquired, err := o.rdb.SetNX(ctx, lockKey(o.taskID), holder, lockTTL).Result()
-		if err != nil {
-			return fmt.Errorf("acquire lock for task %s: %w", o.taskID, err)
-		}
-		if acquired {
-			break
-		}
-
-		if time.Since(start) >= deadline {
-			return fmt.Errorf("failed to acquire lock for task %s within %s", o.taskID, deadline)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-
-		delay *= 2
-		if delay > 5*time.Second {
-			delay = 5 * time.Second
-		}
-	}
-
-	defer o.releaseLock(holder)
-	return fn()
-}
+// persistTitle is a no-op for RedisRepository; title durability requires MySQLRepository.
+func (o *redisTaskOps) persistTitle(_ string) {}
 
 func (o *redisTaskOps) ensureProvisioned(fn func() error) error {
 	ctx := context.Background()

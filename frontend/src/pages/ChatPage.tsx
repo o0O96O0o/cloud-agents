@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/StatusBadge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChat } from '@/hooks/useChat'
 import { getAuthUsername } from '@/lib/auth'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export function ChatPage() {
   const [username, setUsername] = useState<string | null>(getAuthUsername())

@@ -19,6 +19,7 @@ type getTaskResponse struct {
 	State     string `json:"state"`
 	SandboxID string `json:"sandbox_id"`
 	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
 }
 
 type respondToPermissionRequest struct {

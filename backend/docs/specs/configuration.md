@@ -59,20 +59,21 @@ The `base_url` field is useful when routing traffic through an internal proxy or
 
 ## `redis`
 
-| Field | Default | Description |
+**Required.** The server refuses to start if `url` is empty.
+
+| Field | Required | Description |
 |---|---|---|
-| `url` | `""` | Redis connection URL. Empty = use in-memory store |
+| `url` | ✓ | Redis connection URL. Format: `redis://[:password@]host[:port][/db]` |
 
-### Task store selection
+Redis stores two categories of data:
 
-| `redis.url` | Store used | Persistence |
+| Key pattern | Contents | Durability |
 |---|---|---|
-| empty (default) | In-memory (`MemoryRepository`) | Lost on restart |
-| set | Redis (`RedisRepository`) | Survives restarts; shared across instances |
+| `sandbox:{task_id}` | Ephemeral sandbox routing fields (`sandbox_id`, `proxy_base_url`, `proxy_headers`). 7-day TTL. | Cleared on sandbox reset/delete |
+| `task-lock:{task_id}` | Distributed provisioning lock. 30 s TTL. | Auto-released on crash |
+| `cli_login_session:{id}` | OIDC CLI login token. 5 min TTL. | OIDC flow only |
 
-When `redis.url` is set, the server pings Redis at startup and exits immediately if it is unreachable.
-
-**URL format:** `redis://[:password@]host[:port][/db]`
+The server pings Redis at startup and exits immediately if it is unreachable.
 
 ```yaml
 redis:
@@ -81,7 +82,7 @@ redis:
   # url: "redis://host:6379/1"         # database 1
 ```
 
-See [redis-storage.md](redis-storage.md) for the full Redis data model and key operations.
+See [redis-storage.md](redis-storage.md) for the full storage architecture, key operations, and a lifecycle walkthrough.
 
 ---
 
@@ -116,7 +117,14 @@ See [ofsspec.md](ofsspec.md) for the OFS file layout for session history.
 |---|---|---|
 | `dsn` | ✓ | MySQL DSN. Format: `user:pass@tcp(host:port)/dbname?parseTime=true&loc=UTC` |
 
-`db.Open` runs `AutoMigrate` on startup to create/update the `users` table automatically.
+`db.Open` runs `AutoMigrate` on startup to create/update the following tables:
+
+| Table | Purpose |
+|---|---|
+| `users` | User accounts (authentication) |
+| `tasks` | Task state: id, username, state, title, session_id, extra_env, provisioned |
+
+Ephemeral sandbox routing data (`sandbox_id`, `proxy_base_url`, `proxy_headers`) is **not** stored in MySQL — it lives in Redis under `sandbox:{task_id}`. See [redis-storage.md](redis-storage.md).
 
 ---
 
@@ -185,7 +193,7 @@ anthropic:
   disable_experimental_betas: ""
 
 redis:
-  url: ""  # set to redis://localhost:6379 to enable persistence
+  url: "redis://localhost:6379"  # required — sandbox mapping + distributed locks
 
 orangefs:
   addr: ""

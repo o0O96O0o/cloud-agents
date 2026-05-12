@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -87,15 +88,17 @@ func encodeCWD(path string) string {
 	return strings.ReplaceAll(path, "/", "-")
 }
 
-// ListHistory returns all Claude Code JSONL history keys for the given task.
-// Keys are stored under "{username}/.claude/projects/{encoded_cwd}/" where
-// encoded_cwd is the workspace path "/workspace/{username}/{taskID}" with slashes
-// replaced by hyphens. Only direct .jsonl files are returned; subdirectory files
-// (subagent transcripts) are excluded.
+// ListHistory returns session prefixes for the given task.
+// History files are stored under "{username}/history/{encoded_cwd}/{session_id}/".
+// Each session directory contains one or more part-{timestamp}-{random}.ndjson files.
+// The returned strings are S3 key prefixes of the form
+// "{username}/history/{encoded_cwd}/{session_id}/".
 func (c *Client) ListHistory(ctx context.Context, username, taskID string) ([]string, error) {
 	cwd := fmt.Sprintf("/workspace/%s/%s", username, taskID)
-	prefix := fmt.Sprintf("%s/.claude/projects/%s/", username, encodeCWD(cwd))
-	var keys []string
+	prefix := fmt.Sprintf("%s/history/%s/", username, encodeCWD(cwd))
+
+	seen := make(map[string]bool)
+	var sessions []string
 
 	paginator := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
 		Bucket: aws.String(c.volume),
@@ -109,17 +112,58 @@ func (c *Client) ListHistory(ctx context.Context, username, taskID string) ([]st
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
 			rel := strings.TrimPrefix(key, prefix)
-			if strings.HasSuffix(rel, ".jsonl") && !strings.Contains(rel, "/") {
-				keys = append(keys, key)
+			// rel is "{session_id}/part-{timestamp}-{random}.ndjson"
+			slash := strings.Index(rel, "/")
+			if slash < 0 {
+				continue
+			}
+			sessionPrefix := prefix + rel[:slash+1]
+			if !seen[sessionPrefix] {
+				seen[sessionPrefix] = true
+				sessions = append(sessions, sessionPrefix)
 			}
 		}
 	}
-	return keys, nil
+	return sessions, nil
 }
 
-// GetHistory downloads and parses a Claude Code JSONL history file by its S3 key.
-// Malformed lines are silently skipped; meta entries (IsMeta=true) are excluded.
-func (c *Client) GetHistory(ctx context.Context, key string) ([]ConversationEntry, error) {
+// GetHistory downloads and parses all part files under a session prefix.
+// Part files are sorted lexicographically (part-{timestamp}-* filenames make this
+// equivalent to chronological order). Malformed lines and meta entries are excluded.
+func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]ConversationEntry, error) {
+	var partKeys []string
+
+	paginator := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.volume),
+		Prefix: aws.String(sessionPrefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing parts under %q: %w", sessionPrefix, err)
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			if strings.HasSuffix(key, ".ndjson") {
+				partKeys = append(partKeys, key)
+			}
+		}
+	}
+	sort.Strings(partKeys)
+
+	var entries []ConversationEntry
+	for _, key := range partKeys {
+		part, err := c.readPart(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, part...)
+	}
+	return entries, nil
+}
+
+// readPart downloads and parses a single .ndjson part file.
+func (c *Client) readPart(ctx context.Context, key string) ([]ConversationEntry, error) {
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.volume),
 		Key:    aws.String(key),

@@ -263,6 +263,7 @@ func (h *Handler) GetTask(c *gin.Context) {
 		State:     stateStr,
 		SandboxID: sandboxID,
 		SessionID: sessionID,
+		Title:     t.GetTitle(),
 	})
 }
 
@@ -350,16 +351,14 @@ func (h *Handler) GetTaskHistory(c *gin.Context) {
 	}
 
 	entries := make([]storage.ConversationEntry, 0)
-	if len(keys) > 0 {
-		entries, err = h.fileStore.GetHistory(c.Request.Context(), keys[0])
+	for _, key := range keys {
+		part, err := h.fileStore.GetHistory(c.Request.Context(), key)
 		if err != nil {
-			log.Printf("get history for task %s: %v", id, err)
+			log.Printf("get history for task %s key %s: %v", id, key, err)
 			c.String(http.StatusInternalServerError, "failed to get history")
 			return
 		}
-		if entries == nil {
-			entries = make([]storage.ConversationEntry, 0)
-		}
+		entries = append(entries, part...)
 	}
 
 	c.JSON(http.StatusOK, entries)

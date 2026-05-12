@@ -24,6 +24,8 @@ Thumbs.db
 *.swp
 *.swo
 
+# ── Local Data ------------───────────────────────────
+data/*
 # ── Secrets / Local config ───────────────────────────
 *.env
 .env

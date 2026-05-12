@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/your-org/platform-backend/internal/task"
 )
@@ -64,13 +65,15 @@ func NewProxy() *Proxy {
 
 // StreamMessage forwards a prompt to the claude-agent-server and pipes the SSE
 // response back to w. It extracts the agentSessionID from the session.init event
-// on the first message.
+// on the first message. After a new session stream completes it also fetches
+// the session metadata to populate the task title.
 func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, w http.ResponseWriter) error {
 	proxyBaseURL, proxyHeaders := t.GetProxyInfo()
 	sessionID := t.GetSessionID()
+	isNew := sessionID == ""
 
 	var upstreamURL string
-	if sessionID == "" {
+	if isNew {
 		upstreamURL = proxyBaseURL + "/sessions"
 	} else {
 		upstreamURL = proxyBaseURL + "/sessions/" + sessionID + "/messages"
@@ -78,7 +81,7 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 
 	opts := agentQueryOptions{CWD: fmt.Sprintf("/workspace/%s/%s", t.Username, t.ID)}
 	var reqBody any
-	if sessionID == "" {
+	if isNew {
 		reqBody = createSessionRequest{Prompt: prompt, Stream: true, Options: opts}
 	} else {
 		reqBody = sendMessageRequest{Prompt: prompt, Stream: true, Options: opts, IncludePartialMessages: true, ForkSession: false}
@@ -155,7 +158,69 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("reading stream: %w", err)
 	}
+
+	// After a new session completes, fetch its metadata to set the task title.
+	if isNew {
+		if sid := t.GetSessionID(); sid != "" {
+			tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			title := p.fetchSessionTitle(tctx, proxyBaseURL, proxyHeaders, sid, prompt)
+			t.SetTitle(title)
+		}
+	}
+
 	return nil
+}
+
+// sessionMetaResponse is the JSON shape returned by GET /sessions/:sessionId.
+type sessionMetaResponse struct {
+	Session struct {
+		Summary     string  `json:"summary"`
+		CustomTitle *string `json:"customTitle"`
+		FirstPrompt string  `json:"firstPrompt"`
+	} `json:"session"`
+}
+
+// fetchSessionTitle calls GET /sessions/:sessionId on the sandbox and returns
+// the best available title using the summary → customTitle → firstPrompt → fallback chain.
+func (p *Proxy) fetchSessionTitle(ctx context.Context, proxyBaseURL string, proxyHeaders map[string]string, sessionID, fallback string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyBaseURL+"/sessions/"+sessionID, nil)
+	if err != nil {
+		log.Printf("fetchSessionTitle: build request: %v", err)
+		return fallback
+	}
+	for k, v := range proxyHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		log.Printf("fetchSessionTitle: request: %v", err)
+		return fallback
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		log.Printf("fetchSessionTitle: upstream %d for session %s", resp.StatusCode, sessionID)
+		return fallback
+	}
+
+	var meta sessionMetaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		log.Printf("fetchSessionTitle: decode: %v", err)
+		return fallback
+	}
+
+	if meta.Session.Summary != "" {
+		return meta.Session.Summary
+	}
+	if meta.Session.CustomTitle != nil && *meta.Session.CustomTitle != "" {
+		return *meta.Session.CustomTitle
+	}
+	if meta.Session.FirstPrompt != "" {
+		return meta.Session.FirstPrompt
+	}
+	return fallback
 }
 
 type permissionDecisionRequest struct {

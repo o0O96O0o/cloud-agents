@@ -43,6 +43,9 @@ func main() {
 		"ORANGEFS_RS_ADDR":                       cfg.OrangeFS.Addr,
 		"ORANGEFS_TOKEN":                         cfg.OrangeFS.Token,
 		"ORANGEFS_VOLUME":                        cfg.OrangeFS.Volume,
+		"ORANGEFS_ENDPOINT":                      cfg.OrangeFS.Endpoint,
+		"S3_ACCESS_KEY":                          cfg.OrangeFS.AccessKey,
+		"S3_SECRET_KEY":                          cfg.OrangeFS.SecretKey,
 	} {
 		if v != "" {
 			baseEnv[k] = v
@@ -75,11 +78,7 @@ func main() {
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
 			log.Fatalf("redis ping: %v", err)
 		}
-		repo = task.NewRedisRepository(rdb)
-		log.Printf("task store: Redis at %s", cfg.Redis.URL)
-	} else {
-		repo = task.NewMemoryRepository()
-		log.Printf("task store: in-memory (set redis.url in config to enable persistence)")
+		log.Printf("Redis connected at %s", cfg.Redis.URL)
 	}
 
 	if cfg.MySQL.DSN == "" {
@@ -96,6 +95,12 @@ func main() {
 		log.Fatalf("open mysql: %v", err)
 	}
 	log.Printf("MySQL connected")
+
+	if rdb == nil {
+		log.Fatalf("redis.url is required: Redis holds ephemeral sandbox mappings and distributed locks")
+	}
+	repo = task.NewMySQLRepository(gormDB, rdb)
+	log.Printf("task store: MySQL + Redis")
 
 	var oidcSvc *oidcpkg.Service
 	if cfg.OIDC.ClientID != "" && cfg.OIDC.DiscoveryURL != "" {

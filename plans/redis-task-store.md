@@ -1,5 +1,9 @@
 # Redis Task Store Migration Plan
 
+> **Superseded.** This plan described the migration from in-memory to Redis storage, which was completed. Task storage has since been migrated again: durable task fields now live in **MySQL** (`tasks` table) and only ephemeral sandbox routing data (`sandbox_id`, `proxy_base_url`, `proxy_headers`) remains in Redis under `sandbox:{task_id}`. See [docs/specs/redis-storage.md](../backend/docs/specs/redis-storage.md) for the current architecture.
+
+---
+
 ## Goal
 
 Migrate `task.Store` from an in-memory `map[string]*Task` to Redis so that task state

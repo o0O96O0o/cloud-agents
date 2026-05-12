@@ -2,8 +2,10 @@ package task
 
 import "context"
 
-// Repository is the storage interface for Tasks. Implementations include
-// MemoryRepository (for local dev / tests) and RedisRepository.
+// Repository is the storage interface for Tasks. Implementations:
+//   - MemoryRepository — local dev / unit tests (no external deps)
+//   - RedisRepository  — legacy all-Redis storage (tasks + sandbox in Redis)
+//   - MySQLRepository  — production: durable fields in MySQL, sandbox mapping in Redis
 type Repository interface {
 	Create(ctx context.Context, username string, extraEnv map[string]string) (*Task, error)
 	// Get returns nil, nil when the task does not exist.
@@ -13,8 +15,7 @@ type Repository interface {
 
 // taskOps is the optional persistence hook for a Task.
 // nil means all state lives in the Task struct's own fields and mutexes.
-// RedisRepository sets this to a redisTaskOps instance so mutation methods
-// persist to Redis in addition to updating the local snapshot.
+// RedisRepository wires redisTaskOps; MySQLRepository wires mysqlTaskOps.
 type taskOps interface {
 	persistRunning(sandboxID, proxyBaseURL string, proxyHeaders map[string]string)
 	persistProvisioning()
@@ -27,4 +28,5 @@ type taskOps interface {
 	// fields were cleared in Redis and the caller should update its local snapshot.
 	resetIfExpired(isAlive func(string) (bool, error)) (bool, error)
 	resetForReprovisioning()
+	persistTitle(title string)
 }
