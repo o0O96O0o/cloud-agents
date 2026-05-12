@@ -21,6 +21,7 @@ import (
 	"github.com/your-org/platform-backend/internal/storage"
 	"github.com/your-org/platform-backend/internal/task"
 	"github.com/your-org/platform-backend/pkg/config"
+	"github.com/your-org/platform-backend/pkg/logger"
 )
 
 func main() {
@@ -31,6 +32,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
+
+	logger.Init(logger.Config{Level: cfg.Log.Level, Format: cfg.Log.Format})
 
 	baseEnv := map[string]string{
 		"ANTHROPIC_API_KEY": cfg.Anthropic.APIKey,

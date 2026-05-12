@@ -250,6 +250,112 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/tasks/{id}/permissions": {
+            "post": {
+                "description": "Approve or deny a canUseTool permission request that has paused the agent session.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tasks"
+                ],
+                "summary": "Respond to a pending tool permission request",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Task ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Permission decision",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.respondToPermissionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "invalid request body",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "task not found or no pending permission",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "failed to respond to permission",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tasks/{id}/questions": {
+            "post": {
+                "description": "Submit answers to a clarifying question that has paused the agent session.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tasks"
+                ],
+                "summary": "Respond to a pending AskUserQuestion request",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Task ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Question answers",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.respondToQuestionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "invalid request body",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "task not found or no pending question",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "failed to respond to question",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "description": "Liveness probe — returns ok when the server is up.",
@@ -297,6 +403,9 @@ const docTemplate = `{
         },
         "internal_api.createTaskRequest": {
             "type": "object",
+            "required": [
+                "username"
+            ],
             "properties": {
                 "env": {
                     "type": "object",
@@ -332,6 +441,9 @@ const docTemplate = `{
                 "state": {
                     "type": "string"
                 },
+                "title": {
+                    "type": "string"
+                },
                 "username": {
                     "type": "string"
                 }
@@ -342,6 +454,30 @@ const docTemplate = `{
             "properties": {
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_api.respondToPermissionRequest": {
+            "type": "object",
+            "required": [
+                "decision"
+            ],
+            "properties": {
+                "decision": {
+                    "description": "\"allow\" or \"deny\"",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.respondToQuestionRequest": {
+            "type": "object",
+            "required": [
+                "answers"
+            ],
+            "properties": {
+                "answers": {
+                    "type": "object",
+                    "additionalProperties": {}
                 }
             }
         },

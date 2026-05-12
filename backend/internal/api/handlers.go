@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/your-org/platform-backend/internal/storage"
 	"github.com/your-org/platform-backend/internal/task"
 	"github.com/your-org/platform-backend/pkg/config"
+	"github.com/your-org/platform-backend/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -32,7 +34,7 @@ type SandboxManager interface {
 // FileStore retrieves task history from OFS-backed file storage.
 type FileStore interface {
 	ListHistory(ctx context.Context, username, taskID string) ([]string, error)
-	GetHistory(ctx context.Context, key string) ([]storage.ConversationEntry, error)
+	GetHistory(ctx context.Context, key string) ([]json.RawMessage, error)
 	GetSessionMeta(ctx context.Context, username, taskID string) (*storage.SessionMeta, error)
 }
 
@@ -316,21 +318,24 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 // @Description  Retrieve the conversation history for a task. Requires fileStore to be configured.
 // @Tags         tasks
 // @Produce      json
-// @Param        id   path      string                     true  "Task ID"
-// @Success      200  {array}   storage.ConversationEntry
-// @Failure      404  {string}  string                     "task not found"
-// @Failure      500  {string}  string                     "failed to get history"
-// @Failure      503  {string}  string                     "history storage not configured"
+// @Param        id   path      string  true  "Task ID"
+// @Success      200  {array}   object  "Raw session entries (see @anthropic-ai/claude-agent-sdk SDKMessage)"
+// @Failure      404  {string}  string  "task not found"
+// @Failure      500  {string}  string  "failed to get history"
+// @Failure      503  {string}  string  "history storage not configured"
 // @Router       /api/tasks/{id}/history [get]
 func (h *Handler) GetTaskHistory(c *gin.Context) {
 	id := c.Param("id")
+	log := logger.Default().With("task_id", id, "handler", "GetTaskHistory")
+
 	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
-		log.Printf("get task %s: %v", id, err)
+		log.Error("failed to get task", "err", err)
 		c.String(http.StatusInternalServerError, "failed to get task")
 		return
 	}
 	if t == nil {
+		log.Warn("task not found")
 		c.String(http.StatusNotFound, "task not found")
 		return
 	}
@@ -339,28 +344,34 @@ func (h *Handler) GetTaskHistory(c *gin.Context) {
 	}
 
 	if h.fileStore == nil {
+		log.Warn("history storage not configured")
 		c.String(http.StatusServiceUnavailable, "history storage not configured")
 		return
 	}
 
+	log.Info("listing history sessions", "username", t.Username)
 	keys, err := h.fileStore.ListHistory(c.Request.Context(), t.Username, id)
 	if err != nil {
-		log.Printf("list history for task %s: %v", id, err)
+		log.Error("failed to list history sessions", "err", err)
 		c.String(http.StatusInternalServerError, "failed to list history")
 		return
 	}
+	log.Info("found sessions", "session_count", len(keys))
 
-	entries := make([]storage.ConversationEntry, 0)
+	entries := make([]json.RawMessage, 0)
 	for _, key := range keys {
+		log.Info("reading session parts", "session_prefix", key)
 		part, err := h.fileStore.GetHistory(c.Request.Context(), key)
 		if err != nil {
-			log.Printf("get history for task %s key %s: %v", id, key, err)
+			log.Error("failed to read session parts", "session_prefix", key, "err", err)
 			c.String(http.StatusInternalServerError, "failed to get history")
 			return
 		}
+		log.Info("read session parts", "session_prefix", key, "entry_count", len(part))
 		entries = append(entries, part...)
 	}
 
+	log.Info("returning history", "total_entries", len(entries))
 	c.JSON(http.StatusOK, entries)
 }
 

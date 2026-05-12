@@ -23,6 +23,8 @@ definitions:
         type: object
       username:
         type: string
+    required:
+    - username
     type: object
   internal_api.createTaskResponse:
     properties:
@@ -39,6 +41,8 @@ definitions:
         type: string
       state:
         type: string
+      title:
+        type: string
       username:
         type: string
     type: object
@@ -46,6 +50,22 @@ definitions:
     properties:
       status:
         type: string
+    type: object
+  internal_api.respondToPermissionRequest:
+    properties:
+      decision:
+        description: '"allow" or "deny"'
+        type: string
+    required:
+    - decision
+    type: object
+  internal_api.respondToQuestionRequest:
+    properties:
+      answers:
+        additionalProperties: {}
+        type: object
+    required:
+    - answers
     type: object
   internal_api.sendMessageRequest:
     properties:
@@ -216,6 +236,78 @@ paths:
           schema:
             type: string
       summary: Send a message to a task
+      tags:
+      - tasks
+  /api/tasks/{id}/permissions:
+    post:
+      consumes:
+      - application/json
+      description: Approve or deny a canUseTool permission request that has paused
+        the agent session.
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Permission decision
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.respondToPermissionRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: invalid request body
+          schema:
+            type: string
+        "404":
+          description: task not found or no pending permission
+          schema:
+            type: string
+        "502":
+          description: failed to respond to permission
+          schema:
+            type: string
+      summary: Respond to a pending tool permission request
+      tags:
+      - tasks
+  /api/tasks/{id}/questions:
+    post:
+      consumes:
+      - application/json
+      description: Submit answers to a clarifying question that has paused the agent
+        session.
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Question answers
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.respondToQuestionRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: invalid request body
+          schema:
+            type: string
+        "404":
+          description: task not found or no pending question
+          schema:
+            type: string
+        "502":
+          description: failed to respond to question
+          schema:
+            type: string
+      summary: Respond to a pending AskUserQuestion request
       tags:
       - tasks
   /health:

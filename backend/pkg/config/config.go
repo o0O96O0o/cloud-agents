@@ -17,6 +17,12 @@ type Config struct {
 	Auth      AuthConfig      `yaml:"auth"`
 	OIDC      OIDCConfig      `yaml:"oidc"`
 	SSO       SSOConfig       `yaml:"sso"`
+	Log       LogConfig       `yaml:"log"`
+}
+
+type LogConfig struct {
+	Level  string `yaml:"level"`  // debug | info | warn | error (default: info)
+	Format string `yaml:"format"` // json | text (default: json)
 }
 
 type ServerConfig struct {

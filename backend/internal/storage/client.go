@@ -24,22 +24,16 @@ type SessionMeta struct {
 	Version   string `json:"version"`
 }
 
-type ConversationEntry struct {
-	Type       string          `json:"type"`
-	UUID       string          `json:"uuid"`
-	ParentUUID string          `json:"parentUuid"`
-	Timestamp  string          `json:"timestamp"`
-	IsMeta     bool            `json:"isMeta"`
-	Message    json.RawMessage `json:"message" swaggertype:"object"`
-}
-
 // OFSClient retrieves task history from OrangeFS via S3.
 // History files are stored under the user's .claude directory, mirroring the
 // local ~/.claude layout: {username}/.claude/projects/{encoded_cwd}/{session_id}.jsonl
 // The OFS mount is set up at sandbox creation time, before any agent session exists.
 type OFSClient interface {
 	ListHistory(ctx context.Context, username, taskID string) ([]string, error)
-	GetHistory(ctx context.Context, key string) ([]ConversationEntry, error)
+	// GetHistory returns raw NDJSON entries from the session part files. Each
+	// entry is the complete JSON object as stored on disk; no fields are dropped.
+	// Entries with isMeta:true are excluded.
+	GetHistory(ctx context.Context, key string) ([]json.RawMessage, error)
 	GetSessionMeta(ctx context.Context, username, taskID string) (*SessionMeta, error)
 }
 
@@ -130,7 +124,7 @@ func (c *Client) ListHistory(ctx context.Context, username, taskID string) ([]st
 // GetHistory downloads and parses all part files under a session prefix.
 // Part files are sorted lexicographically (part-{timestamp}-* filenames make this
 // equivalent to chronological order). Malformed lines and meta entries are excluded.
-func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]ConversationEntry, error) {
+func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]json.RawMessage, error) {
 	var partKeys []string
 
 	paginator := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
@@ -144,14 +138,14 @@ func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]Conver
 		}
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
-			if strings.HasSuffix(key, ".ndjson") {
+			if strings.HasSuffix(key, ".ndjson") || strings.HasSuffix(key, ".jsonl") {
 				partKeys = append(partKeys, key)
 			}
 		}
 	}
 	sort.Strings(partKeys)
 
-	var entries []ConversationEntry
+	var entries []json.RawMessage
 	for _, key := range partKeys {
 		part, err := c.readPart(ctx, key)
 		if err != nil {
@@ -162,8 +156,10 @@ func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]Conver
 	return entries, nil
 }
 
-// readPart downloads and parses a single .ndjson part file.
-func (c *Client) readPart(ctx context.Context, key string) ([]ConversationEntry, error) {
+// readPart downloads a single .ndjson part file and returns each line as a raw
+// JSON message. Only the isMeta field is decoded to filter internal entries;
+// all other fields are preserved verbatim.
+func (c *Client) readPart(ctx context.Context, key string) ([]json.RawMessage, error) {
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.volume),
 		Key:    aws.String(key),
@@ -173,7 +169,7 @@ func (c *Client) readPart(ctx context.Context, key string) ([]ConversationEntry,
 	}
 	defer out.Body.Close()
 
-	var entries []ConversationEntry
+	var entries []json.RawMessage
 	scanner := bufio.NewScanner(out.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
 	for scanner.Scan() {
@@ -181,13 +177,18 @@ func (c *Client) readPart(ctx context.Context, key string) ([]ConversationEntry,
 		if len(line) == 0 {
 			continue
 		}
-		var entry ConversationEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
+		var filter struct {
+			IsMeta bool `json:"isMeta"`
+		}
+		if err := json.Unmarshal(line, &filter); err != nil {
 			continue
 		}
-		if !entry.IsMeta {
-			entries = append(entries, entry)
+		if filter.IsMeta {
+			continue
 		}
+		raw := make([]byte, len(line))
+		copy(raw, line)
+		entries = append(entries, raw)
 	}
 	return entries, scanner.Err()
 }
