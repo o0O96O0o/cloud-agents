@@ -1,4 +1,5 @@
 import { getToken } from '@/lib/auth'
+import type { SessionEntry } from '@/types/session'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -9,13 +10,37 @@ function authHeaders(): Record<string, string> {
 
 export interface RuntimeConfig {
   loginMode: string
-  devLogin: boolean
+  passwordLogin: boolean
+  allowRegister: boolean
 }
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   const res = await fetch(`${BASE}/api/runtime-config`)
   if (!res.ok) throw new Error('Failed to fetch runtime config')
   return res.json() as Promise<RuntimeConfig>
+}
+
+export async function loginWithPassword(username: string, password: string): Promise<string> {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) throw new Error('Invalid credentials')
+  const { access_token } = await res.json() as { access_token: string }
+  return access_token
+}
+
+export async function register(username: string, password: string, email?: string): Promise<string> {
+  const res = await fetch(`${BASE}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, email }),
+  })
+  if (res.status === 409) throw new Error('Username already taken')
+  if (!res.ok) throw new Error('Registration failed')
+  const { access_token } = await res.json() as { access_token: string }
+  return access_token
 }
 
 export async function createTask(username: string): Promise<string> {
@@ -58,4 +83,28 @@ export async function respondToQuestion(taskId: string, answers: Record<string, 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers }),
   })
+}
+
+export interface TaskSummary {
+  id: string
+  title: string
+  state: string
+  created_at: string
+  updated_at: string
+}
+
+export async function listTasks(): Promise<TaskSummary[]> {
+  const res = await fetch(`${BASE}/api/tasks`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to list tasks')
+  return res.json() as Promise<TaskSummary[]>
+}
+
+export async function getHistory(taskId: string): Promise<SessionEntry[]> {
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/history`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to get history')
+  return res.json() as Promise<SessionEntry[]>
 }

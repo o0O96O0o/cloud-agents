@@ -1,6 +1,29 @@
 # History Replay Plan
 
-## Goal
+> **Status: implemented** (approach changed from original plan — see "What was actually built" below).
+
+## What was actually built
+
+The final implementation took a different approach from the original plan below. Instead of a backend
+`ParseHistory` transformer, the full raw JSON is passed through and the frontend does the conversion:
+
+**Backend**
+- `storage.Client.GetHistory` returns `[]json.RawMessage` (verbatim NDJSON, only `isMeta:true` lines filtered).
+- `GET /api/tasks/:id/history` returns the raw JSON array unchanged.
+- `GET /api/tasks` (new) lists tasks for the authenticated user, returning `[{id, title, state, created_at, updated_at}]`.
+
+**Frontend**
+- `@anthropic-ai/claude-agent-sdk` added as a devDependency; its exported SDK types (`SDKAssistantMessage`, `SDKUserMessage`, etc.) are used directly via the `DiskEnvelope` intersection pattern in `src/types/session.ts`.
+- `src/lib/chainBuilder.ts` — `buildMessages(SessionEntry[]): Message[]` converts history entries to the same `Message` type the live chat uses.
+- `src/components/HistorySidepanel.tsx` — left sidebar listing tasks with titles and dates.
+- `src/pages/ChatPage.tsx` — two-column layout; selecting a task loads its history via `getHistory` → `buildMessages` → `useChat.loadTask`, making it immediately resumable.
+- `useChat` gains `taskId`, `loadTask(id, messages)`, and `newChat()`.
+
+---
+
+## Original plan (superseded)
+
+### Goal
 
 `GET /api/tasks/:id/history` currently returns raw `[]storage.ConversationEntry` where
 `Message` is `json.RawMessage`. The frontend cannot display this directly — it needs the same

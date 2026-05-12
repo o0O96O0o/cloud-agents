@@ -250,11 +250,10 @@ func (t *Task) resetLocked() {
 	t.mu.Unlock()
 }
 
-// computeStateStr returns the task state label from the spec state table.
-// Must be called with t.mu held for reading.
-func (t *Task) computeStateStr() string {
-	hasSession := t.sessionID != ""
-	switch t.state {
+// StateString returns the spec state label for a given state + session presence.
+// This is the package-level counterpart of computeStateStr for use without a Task.
+func StateString(s State, hasSession bool) string {
+	switch s {
 	case StateNew:
 		if hasSession {
 			return "paused"
@@ -275,6 +274,12 @@ func (t *Task) computeStateStr() string {
 	default:
 		return "unknown"
 	}
+}
+
+// computeStateStr returns the task state label from the spec state table.
+// Must be called with t.mu held for reading.
+func (t *Task) computeStateStr() string {
+	return StateString(t.state, t.sessionID != "")
 }
 
 func (t *Task) Info() (id, sandboxID, sessionID, stateStr string) {
@@ -338,4 +343,23 @@ func (r *MemoryRepository) Get(_ context.Context, id string) (*Task, error) {
 func (r *MemoryRepository) Delete(_ context.Context, id string) error {
 	r.store.Delete(id)
 	return nil
+}
+
+func (r *MemoryRepository) List(_ context.Context, username string) ([]TaskSummary, error) {
+	r.store.mu.RLock()
+	defer r.store.mu.RUnlock()
+	var result []TaskSummary
+	for _, t := range r.store.tasks {
+		if t.Username != username {
+			continue
+		}
+		t.mu.RLock()
+		result = append(result, TaskSummary{
+			ID:    t.ID,
+			Title: t.title,
+			State: t.computeStateStr(),
+		})
+		t.mu.RUnlock()
+	}
+	return result, nil
 }

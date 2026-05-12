@@ -1,9 +1,7 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -11,7 +9,6 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 	_ "github.com/your-org/platform-backend/docs"
 	"github.com/your-org/platform-backend/internal/auth"
-	"github.com/your-org/platform-backend/internal/db"
 	oidcpkg "github.com/your-org/platform-backend/internal/oidc"
 	"github.com/your-org/platform-backend/internal/sandbox"
 	ssopkg "github.com/your-org/platform-backend/internal/sso"
@@ -57,10 +54,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 		r.GET("/api/auth/sso/callback", ssoH.Callback)
 	}
 	r.POST("/api/auth/login", PasswordLoginHandler(deps.DB, deps.Cfg.Auth))
-	// Dev-only: no SSO/OIDC configured → allow username-only login to create a user record.
-	if deps.SSOService == nil && deps.OIDCService == nil {
-		r.GET("/api/auth/dev/login", devLoginHandler(deps.DB, deps.Cfg.Auth))
-	}
+	r.POST("/api/auth/register", RegisterHandler(deps.DB, deps.Cfg.Auth))
 
 	r.GET("/api/runtime-config", runtimeConfigHandler(deps.Cfg, deps.OIDCService, deps.SSOService))
 
@@ -68,6 +62,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 	protected := r.Group("/api/tasks")
 	protected.Use(auth.BearerAuth(deps.Cfg.Auth.SecretKey, deps.DB))
 	{
+		protected.GET("", h.ListTasks)
 		protected.POST("", h.CreateTask)
 		protected.POST("/:id/messages", h.SendMessage)
 		protected.GET("/:id", h.GetTask)
@@ -85,7 +80,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 type runtimeConfigResponse struct {
 	LoginMode     string `json:"loginMode"`
-	DevLogin      bool   `json:"devLogin"`
+	PasswordLogin bool   `json:"passwordLogin"`
+	AllowRegister bool   `json:"allowRegister"`
 	OIDCLoginText string `json:"oidcLoginText,omitempty"`
 	SSOLoginText  string `json:"ssoLoginText,omitempty"`
 }
@@ -116,32 +112,11 @@ func runtimeConfigHandler(cfg *config.Config, oidcSvc *oidcpkg.Service, ssoSvc *
 
 		c.JSON(http.StatusOK, runtimeConfigResponse{
 			LoginMode:     mode,
-			DevLogin:      hasPassword && !hasOIDC && !hasSSO,
+			PasswordLogin: hasPassword && !hasOIDC && !hasSSO,
+			AllowRegister: hasPassword && !hasOIDC && !hasSSO,
 			OIDCLoginText: cfg.OIDC.ClientID,
 			SSOLoginText:  cfg.SSO.AppID,
 		})
-	}
-}
-
-func devLoginHandler(gormDB *gorm.DB, cfg config.AuthConfig) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		username := c.Query("username")
-		if username == "" {
-			c.String(http.StatusBadRequest, "missing username")
-			return
-		}
-		user, err := db.FindOrCreate(gormDB, username, username+"@dev.local", db.AuthSourceDev)
-		if err != nil {
-			c.String(http.StatusInternalServerError, "failed to find/create user")
-			return
-		}
-		ttl := time.Duration(cfg.TokenTTLSeconds) * time.Second
-		token, err := auth.CreateToken(cfg.SecretKey, ttl, user.ID, user.UserName)
-		if err != nil {
-			c.String(http.StatusInternalServerError, "failed to issue token")
-			return
-		}
-		c.Redirect(http.StatusFound, fmt.Sprintf("%s/login/sso#access_token=%s", cfg.FrontendURL, token))
 	}
 }
 

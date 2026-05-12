@@ -29,6 +29,11 @@ func NewMySQLRepository(db *gorm.DB, rdb *redis.Client) *MySQLRepository {
 }
 
 func (r *MySQLRepository) Create(ctx context.Context, username string, extraEnv map[string]string) (*Task, error) {
+	var user db.User
+	if err := r.db.WithContext(ctx).Where("user_name = ?", username).First(&user).Error; err != nil {
+		return nil, fmt.Errorf("look up user %s: %w", username, err)
+	}
+
 	id := uuid.New().String()
 
 	extraEnvJSON, err := json.Marshal(extraEnv)
@@ -38,7 +43,7 @@ func (r *MySQLRepository) Create(ctx context.Context, username string, extraEnv 
 
 	rec := db.Task{
 		ID:       id,
-		Username: username,
+		UserID:   user.ID,
 		State:    int(StateNew),
 		ExtraEnv: string(extraEnvJSON),
 	}
@@ -59,7 +64,7 @@ func (r *MySQLRepository) Create(ctx context.Context, username string, extraEnv 
 // Get returns nil, nil when the task does not exist.
 func (r *MySQLRepository) Get(ctx context.Context, id string) (*Task, error) {
 	var rec db.Task
-	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&rec).Error; err != nil {
+	if err := r.db.WithContext(ctx).Preload("User").Where("id = ?", id).First(&rec).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -92,7 +97,7 @@ func (r *MySQLRepository) Get(ctx context.Context, id string) (*Task, error) {
 
 	t := &Task{
 		ID:           id,
-		Username:     rec.Username,
+		Username:     rec.User.UserName,
 		state:        State(rec.State),
 		sandboxID:    sandboxID,
 		proxyBaseURL: proxyBaseURL,
@@ -104,6 +109,36 @@ func (r *MySQLRepository) Get(ctx context.Context, id string) (*Task, error) {
 	}
 	t.ops = &mysqlTaskOps{db: r.db, rdb: r.rdb, lock: redisLock{rdb: r.rdb, taskID: id}}
 	return t, nil
+}
+
+func (r *MySQLRepository) List(ctx context.Context, username string) ([]TaskSummary, error) {
+	var user db.User
+	if err := r.db.WithContext(ctx).Where("user_name = ?", username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("look up user %s: %w", username, err)
+	}
+
+	var records []db.Task
+	if err := r.db.WithContext(ctx).
+		Where("user_id = ?", user.ID).
+		Order("updated_at DESC").
+		Limit(100).
+		Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list tasks for %s: %w", username, err)
+	}
+	summaries := make([]TaskSummary, len(records))
+	for i, rec := range records {
+		summaries[i] = TaskSummary{
+			ID:        rec.ID,
+			Title:     rec.Title,
+			State:     StateString(State(rec.State), rec.SessionID != ""),
+			CreatedAt: rec.CreatedAt,
+			UpdatedAt: rec.UpdatedAt,
+		}
+	}
+	return summaries, nil
 }
 
 func (r *MySQLRepository) Delete(ctx context.Context, id string) error {

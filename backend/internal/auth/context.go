@@ -21,3 +21,13 @@ func GetUser(c *gin.Context) *db.User {
 	u, _ := v.(*db.User)
 	return u
 }
+
+// GetUserID returns the authenticated user's database ID and true,
+// or 0, false if no user is set on the context.
+func GetUserID(c *gin.Context) (uint, bool) {
+	u := GetUser(c)
+	if u == nil {
+		return 0, false
+	}
+	return u.ID, true
+}

@@ -1,5 +1,7 @@
 package api
 
+import "time"
+
 type createTaskRequest struct {
 	Username string            `json:"username" binding:"required"`
 	Env      map[string]string `json:"env,omitempty"`
@@ -32,4 +34,12 @@ type respondToQuestionRequest struct {
 
 type healthResponse struct {
 	Status string `json:"status"`
+}
+
+type taskListItem struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

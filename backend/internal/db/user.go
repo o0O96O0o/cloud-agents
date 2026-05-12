@@ -75,6 +75,26 @@ func FindOrCreate(db *gorm.DB, userName, email string, src AuthSource) (*User, e
 	return &u, nil
 }
 
+// CreateWithPassword creates a new user with the given username, email, and hashed password.
+// Returns an error if the username already exists.
+func CreateWithPassword(db *gorm.DB, userName, email, password string) (*User, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	u := User{
+		UserName:     userName,
+		Email:        email,
+		PasswordHash: string(hash),
+		IsActive:     true,
+		AuthSource:   AuthSourcePassword,
+	}
+	if err := db.Create(&u).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // FindByCredentials looks up a user by username, verifies their password,
 // and checks the account is active. Returns nil (no error) on bad credentials
 // or inactive account — callers should return 401 in that case.

@@ -224,5 +224,21 @@ export function useChat(username: string) {
     }
   }, [taskId, username])
 
-  return { messages, sandboxState, sending, sendMessage, approvePermission, answerQuestion }
+  const newChat = useCallback(() => {
+    setTaskId(null)
+    setMessages([])
+    setSandboxState('idle')
+    setSending(false)
+    currentAssistantMsgIdRef.current = null
+  }, [])
+
+  const loadTask = useCallback((tid: string, historyMessages: Message[]) => {
+    setTaskId(tid)
+    setMessages(historyMessages)
+    setSandboxState('idle')
+    setSending(false)
+    currentAssistantMsgIdRef.current = null
+  }, [])
+
+  return { messages, taskId, sandboxState, sending, sendMessage, approvePermission, answerQuestion, newChat, loadTask }
 }

@@ -24,7 +24,7 @@ func newMySQLTestRepo(t *testing.T) (*MySQLRepository, *miniredis.Miniredis) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := gormDB.AutoMigrate(&db.Task{}); err != nil {
+	if err := gormDB.AutoMigrate(&db.User{}, &db.Task{}); err != nil {
 		t.Fatalf("automigrate: %v", err)
 	}
 
@@ -40,9 +40,20 @@ func newMySQLTestRepo(t *testing.T) (*MySQLRepository, *miniredis.Miniredis) {
 	return NewMySQLRepository(gormDB, rdb), s
 }
 
+// mustInsertUser creates a user row in the test DB and returns its ID.
+func mustInsertUser(t *testing.T, repo *MySQLRepository, username string) uint {
+	t.Helper()
+	u := db.User{UserName: username, Email: username + "@test.local", PasswordHash: "x", IsActive: true}
+	if err := repo.db.Create(&u).Error; err != nil {
+		t.Fatalf("insert user %s: %v", username, err)
+	}
+	return u.ID
+}
+
 func TestMySQLCreate_StoresTask(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "alice")
 
 	tsk, err := repo.Create(ctx, "alice", map[string]string{"FOO": "bar"})
 	if err != nil {
@@ -65,6 +76,7 @@ func TestMySQLCreate_StoresTask(t *testing.T) {
 func TestMySQLGet_Found(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "bob")
 
 	created, _ := repo.Create(ctx, "bob", nil)
 	got, err := repo.Get(ctx, created.ID)
@@ -96,8 +108,9 @@ func TestMySQLGet_Missing(t *testing.T) {
 func TestMySQLDelete_Removes(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	if err := repo.Delete(ctx, tsk.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -113,8 +126,9 @@ func TestMySQLDelete_Removes(t *testing.T) {
 func TestMySQLSetRunning_Persists(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	headers := map[string]string{"Authorization": "Bearer tok"}
 	tsk.SetRunning("sb-1", "http://proxy/", headers)
 
@@ -140,8 +154,9 @@ func TestMySQLSetRunning_Persists(t *testing.T) {
 func TestMySQLSetSessionID_WriteOnce(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.SetSessionID("first")
 	tsk.SetSessionID("second") // should be a no-op
 
@@ -154,8 +169,9 @@ func TestMySQLSetSessionID_WriteOnce(t *testing.T) {
 func TestMySQLEnsureProvisioned_CalledOnce(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 
 	var callCount atomic.Int32
 	var wg sync.WaitGroup
@@ -184,8 +200,9 @@ func TestMySQLEnsureProvisioned_CalledOnce(t *testing.T) {
 func TestMySQLEnsureProvisioned_StateNotPersistedFails(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	err := tsk.EnsureProvisioned(func() error {
 		// fn succeeds but never calls SetRunning — state stays StateNew.
 		return nil
@@ -203,8 +220,9 @@ func TestMySQLEnsureProvisioned_StateNotPersistedFails(t *testing.T) {
 func TestMySQLEnsureProvisioned_FailedFnRetried(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	want := errors.New("provision failed")
 
 	err := tsk.EnsureProvisioned(func() error { return want })
@@ -221,8 +239,9 @@ func TestMySQLEnsureProvisioned_FailedFnRetried(t *testing.T) {
 func TestMySQLResetIfExpired_ResetsWhenNotAlive(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.EnsureProvisioned(func() error {
 		tsk.SetRunning("sb-expired", "http://proxy/", map[string]string{})
 		return nil
@@ -248,8 +267,9 @@ func TestMySQLResetIfExpired_ResetsWhenNotAlive(t *testing.T) {
 func TestMySQLResetIfExpired_NoResetWhenAlive(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.EnsureProvisioned(func() error {
 		tsk.SetRunning("sb-alive", "http://proxy/", map[string]string{})
 		return nil
@@ -269,8 +289,9 @@ func TestMySQLResetIfExpired_NoResetWhenAlive(t *testing.T) {
 func TestMySQLResetForReprovisioning_ClearsState(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.EnsureProvisioned(func() error {
 		tsk.SetRunning("sb-1", "http://proxy/", map[string]string{})
 		return nil
@@ -295,8 +316,9 @@ func TestMySQLResetForReprovisioning_ClearsState(t *testing.T) {
 func TestMySQLPersistTitle(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.SetTitle("My project")
 
 	got, _ := repo.Get(ctx, tsk.ID)
@@ -308,8 +330,9 @@ func TestMySQLPersistTitle(t *testing.T) {
 func TestMySQLDelete_CleansRedis(t *testing.T) {
 	repo, _ := newMySQLTestRepo(t)
 	ctx := context.Background()
+	mustInsertUser(t, repo, "testuser")
 
-	tsk, _ := repo.Create(ctx, "", nil)
+	tsk, _ := repo.Create(ctx, "testuser", nil)
 	tsk.SetRunning("sb-del", "http://proxy/", nil)
 
 	// Confirm sandbox hash exists in Redis.

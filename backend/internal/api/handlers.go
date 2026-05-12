@@ -101,6 +101,37 @@ func PasswordLoginHandler(gormDB *gorm.DB, authCfg config.AuthConfig) gin.Handle
 	}
 }
 
+// RegisterHandler handles POST /api/auth/register (username + password + email).
+func RegisterHandler(gormDB *gorm.DB, authCfg config.AuthConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+			Email    string `json:"email"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+			return
+		}
+		if body.Email == "" {
+			body.Email = body.Username + "@local"
+		}
+		user, err := db.CreateWithPassword(gormDB, body.Username, body.Email, body.Password)
+		if err != nil {
+			log.Printf("register user: %v", err)
+			c.JSON(http.StatusConflict, gin.H{"error": "username already taken"})
+			return
+		}
+		ttl := time.Duration(authCfg.TokenTTLSeconds) * time.Second
+		token, err := auth.CreateToken(authCfg.SecretKey, ttl, user.ID, user.UserName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"access_token": token})
+	}
+}
+
 // checkTaskOwner returns true and writes a 403 if the authenticated user does not
 // own the task. When auth is disabled (no user on context) ownership is not enforced.
 func checkTaskOwner(c *gin.Context, taskUsername string) bool {
@@ -457,6 +488,39 @@ func (h *Handler) RespondToQuestion(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 	c.Writer.WriteHeaderNow()
+}
+
+// ListTasks handles GET /api/tasks.
+//
+// @Summary      List tasks for the authenticated user
+// @Description  Returns task summaries ordered by most recently updated.
+// @Tags         tasks
+// @Produce      json
+// @Success      200  {array}   taskListItem
+// @Router       /api/tasks [get]
+func (h *Handler) ListTasks(c *gin.Context) {
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusOK, []taskListItem{})
+		return
+	}
+	tasks, err := h.store.List(c.Request.Context(), u.UserName)
+	if err != nil {
+		log.Printf("list tasks for %s: %v", u.UserName, err)
+		c.String(http.StatusInternalServerError, "failed to list tasks")
+		return
+	}
+	items := make([]taskListItem, len(tasks))
+	for i, t := range tasks {
+		items[i] = taskListItem{
+			ID:        t.ID,
+			Title:     t.Title,
+			State:     t.State,
+			CreatedAt: t.CreatedAt,
+			UpdatedAt: t.UpdatedAt,
+		}
+	}
+	c.JSON(http.StatusOK, items)
 }
 
 // Health handles GET /health.

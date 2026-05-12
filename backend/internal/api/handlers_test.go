@@ -48,6 +48,10 @@ func (m *mockStore) Get(_ context.Context, id string) (*task.Task, error) {
 
 func (m *mockStore) Delete(_ context.Context, _ string) error { return nil }
 
+func (m *mockStore) List(_ context.Context, _ string) ([]task.TaskSummary, error) {
+	return nil, nil
+}
+
 type mockManager struct {
 	provisionErr error
 	calls        atomic.Int32

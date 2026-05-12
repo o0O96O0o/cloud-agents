@@ -194,6 +194,7 @@ Interactive docs (Swagger UI) available at **`http://localhost:8081/swagger/inde
 
 | Method | Path | Status | Description |
 |---|---|---|---|
+| `GET` | `/api/tasks` | 200 | List tasks for the authenticated user (newest first) |
 | `POST` | `/api/tasks` | 201 | Create a task → `{ "id": "<uuid>" }` |
 | `POST` | `/api/tasks/:id/messages` | 200 | Send a message (SSE stream) |
 | `GET` | `/api/tasks/:id` | 200 | Get task state |
@@ -201,6 +202,22 @@ Interactive docs (Swagger UI) available at **`http://localhost:8081/swagger/inde
 | `DELETE` | `/api/tasks/:id` | 204 | Delete task and tear down sandbox |
 | `GET` | `/health` | 200 | Liveness probe → `{ "status": "ok" }` |
 | `GET` | `/swagger/*` | — | Swagger UI |
+
+### GET /api/tasks — response
+
+```json
+[
+  {
+    "id": "a1b2c3...",
+    "title": "Refactor authentication module",
+    "state": "paused",
+    "created_at": "2026-05-12T09:00:00Z",
+    "updated_at": "2026-05-12T10:30:00Z"
+  }
+]
+```
+
+Returns up to 100 tasks for the authenticated user, ordered by `updated_at` descending. Returns `[]` (not 401) when auth is disabled.
 
 ### POST /api/tasks — request body (optional)
 
@@ -380,6 +397,10 @@ The manager builds the sandbox env by merging config-level fields with per-task 
 ```bash
 # health
 curl http://localhost:8081/health
+
+# list tasks for authenticated user
+curl http://localhost:8081/api/tasks \
+  -H "Authorization: Bearer <token>"
 
 # create task
 curl -X POST http://localhost:8081/api/tasks
