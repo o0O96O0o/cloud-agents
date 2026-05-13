@@ -81,6 +81,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 		protected.POST("/tasks/:id/questions", h.RespondToQuestion)
 
 		protected.POST("/resources", h.CreateResource)
+		protected.POST("/resources/zip", h.CreateSkillFromZip)
 		protected.GET("/resources", h.ListResources)
 		protected.PUT("/resources/:id", h.UpdateResource)
 		protected.DELETE("/resources/:id", h.DeleteResource)

@@ -153,6 +153,37 @@ Returns all resources (active and inactive) owned by the authenticated user. Emp
 
 ---
 
+### `POST /api/resources/zip` — Create a skill from a zip archive
+
+Accepts a `multipart/form-data` request with two fields:
+
+| Field | Type   | Description |
+|-------|--------|-------------|
+| `name` | string | Skill name — must match `^[a-zA-Z0-9_-]+$` |
+| `file` | file   | A `.zip` archive |
+
+**Zip requirements:**
+- `SKILL.md` must exist at the zip root (→ 400 if missing)
+- All file paths must match `^[a-zA-Z0-9_./-]+$` with no empty, `.`, or `..` segments (→ 400)
+- Total files ≤ 20 (→ 422)
+- Each file ≤ 1 MiB (→ 413)
+- Total zip size ≤ 20 MiB (→ 413)
+
+**Behavior:**
+1. Parses and validates the zip server-side using `archive/zip`
+2. Writes `SKILL.md` to OFS at `{username}/resources/skills/{name}/SKILL.md`
+3. Creates the `kinds` DB record with `meta = {"files": ["SKILL.md"]}`
+4. For each companion file: writes to OFS and appends to `meta.files`
+5. Returns the final resource record with the complete `meta.files` list
+
+**Response:** `201 Created` with the resource record, or:
+- `400` — invalid name, missing SKILL.md, bad zip, or invalid file paths
+- `413` — zip or individual file exceeds size limit
+- `422` — more than 20 files in the zip
+- `503` — OFS not configured
+
+---
+
 ### `PUT /api/resources/:id` — Update a resource
 
 **Request body** (all fields optional):

@@ -16,6 +16,7 @@ import { ResourceForm } from '@/components/ResourceForm'
 import {
   listResources,
   createResource,
+  createSkillFromZip,
   updateResource,
   deleteResource,
 } from '@/api/client'
@@ -56,6 +57,12 @@ export function ResourcesPage() {
 
   const handleCreate = async (name: string, content: string) => {
     const created = await createResource({ kind: tab, name, content })
+    setResources(prev => [...prev, created])
+    setFormState('closed')
+  }
+
+  const handleCreateZip = async (name: string, file: File) => {
+    const created = await createSkillFromZip(name, file)
     setResources(prev => [...prev, created])
     setFormState('closed')
   }
@@ -102,6 +109,13 @@ export function ResourcesPage() {
             {list.map(r => (
               <div key={r.id} className="flex items-center gap-3 px-4 py-3 bg-white hover:bg-neutral-50">
                 <span className="flex-1 text-sm font-medium truncate">{r.name}</span>
+                {r.kind === 'skill' && (() => {
+                  const files = (r.meta as { files?: string[] }).files
+                  const count = files && files.length > 0 ? files.length : 1
+                  return count > 1 ? (
+                    <span className="text-xs text-neutral-400">{count} files</span>
+                  ) : null
+                })()}
                 <div className="flex items-center gap-1.5 text-xs text-neutral-500">
                   <Switch
                     checked={r.is_active}
@@ -109,14 +123,16 @@ export function ResourcesPage() {
                   />
                   <span>{r.is_active ? 'Active' : 'Inactive'}</span>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-7 px-2"
-                  onClick={() => setFormState(r.id)}
-                >
-                  Edit
-                </Button>
+                {r.kind === 'mcp' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-7 px-2"
+                    onClick={() => setFormState(r.id)}
+                  >
+                    Edit
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -134,6 +150,7 @@ export function ResourcesPage() {
           <ResourceForm
             kind={kind}
             onSave={handleCreate}
+            onSaveZip={kind === 'skill' ? handleCreateZip : undefined}
             onCancel={() => setFormState('closed')}
           />
         )}
