@@ -81,9 +81,15 @@ Session history and process records are stored in OFS via the S3 API. The top-le
 │   └── {encoded_cwd}/                          # CWD path with '/' replaced by '-'
 │       └── {session_id}/                       # agent session UUID
 │           └── part-{13ms}-{rand}.ndjson       # JSONL conversation parts
-└── .claude/
-    └── sessions/
-        └── {pid}.json                          # agent process record
+├── .claude/
+│   └── sessions/
+│       └── {pid}.json                          # agent process record
+└── resources/                                  # user-registered resources (written by backend)
+    ├── skills/
+    │   └── {name}/
+    │       └── SKILL.md                        # skill markdown; injected by manager at provision
+    └── mcp/
+        └── {name}.json                         # MCP server config JSON; injected into .mcp.json
 ```
 
 ### Working Directory Encoding
@@ -157,6 +163,7 @@ Implemented in `internal/storage/client.go` using `aws-sdk-go-v2`. Initialised i
 ### Interface
 
 ```go
+// OFSClient is the read-only interface used by handlers and history APIs.
 type OFSClient interface {
     // ListHistory returns session prefixes for the given task.
     // Each prefix is "{username}/history/{encoded_cwd}/{session_id}/".
@@ -170,6 +177,18 @@ type OFSClient interface {
     // scanning "{username}/.claude/sessions/" and matching on CWD.
     GetSessionMeta(ctx context.Context, username, taskID string) (*SessionMeta, error)
 }
+```
+
+`*storage.Client` also exposes two write methods used by the resource subsystem, but **not** declared on `OFSClient` (they are accessed via narrow interfaces to avoid widening the read-only contract):
+
+```go
+// PutObject writes data to an arbitrary S3 key in the OFS volume.
+// Used by the resource API handler (api.ResourceWriter interface).
+func (c *Client) PutObject(ctx context.Context, key string, data []byte) error
+
+// GetObjectBytes downloads a single S3 object and returns its raw bytes.
+// Used by the sandbox manager (sandbox.ofsReader interface).
+func (c *Client) GetObjectBytes(ctx context.Context, key string) ([]byte, error)
 ```
 
 ### Retrieving History for a Task
@@ -186,11 +205,13 @@ entries, err := fileStore.GetHistory(ctx, keys[0])
 
 ## S3 Key Reference
 
-| Object | S3 Key |
-|--------|--------|
-| Agent process record | `{username}/.claude/sessions/{pid}.json` |
-| Session history parts | `{username}/history/{encoded_cwd}/{session_id}/part-{13ms}-{rand}.ndjson` |
-| Agent workspace files | FUSE-mounted; not accessible via S3 from backend |
+| Object | S3 Key | Writer |
+|--------|--------|--------|
+| Agent process record | `{username}/.claude/sessions/{pid}.json` | Agent server |
+| Session history parts | `{username}/history/{encoded_cwd}/{session_id}/part-{13ms}-{rand}.ndjson` | Agent server |
+| Skill content | `{username}/resources/skills/{name}/SKILL.md` | Backend (`PutObject`) |
+| MCP config | `{username}/resources/mcp/{name}.json` | Backend (`PutObject`) |
+| Agent workspace files | FUSE-mounted; not accessible via S3 from backend | Entrypoint / agent |
 
 `{encoded_cwd}` = CWD with every `/` replaced by `-`, e.g. `-workspace-{username}-{task_id}`.
 

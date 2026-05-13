@@ -2,9 +2,11 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -64,6 +66,38 @@ func New(endpoint, volume, accessKey, secretKey string) (*Client, error) {
 	})
 
 	return &Client{s3: s3c, volume: volume}, nil
+}
+
+// PutObject writes data to the given S3 key in the OFS volume.
+func (c *Client) PutObject(ctx context.Context, key string, data []byte) error {
+	size := int64(len(data))
+	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(c.volume),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(data),
+		ContentLength: &size,
+	})
+	if err != nil {
+		return fmt.Errorf("putting object %q: %w", key, err)
+	}
+	return nil
+}
+
+// GetObjectBytes downloads a single S3 object and returns its contents.
+func (c *Client) GetObjectBytes(ctx context.Context, key string) ([]byte, error) {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.volume),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting object %q: %w", key, err)
+	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading object %q: %w", key, err)
+	}
+	return data, nil
 }
 
 // Ping verifies connectivity by listing at most one object in the bucket.

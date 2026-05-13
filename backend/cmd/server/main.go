@@ -60,7 +60,7 @@ func main() {
 		platform = &sandbox.PlatformSpec{OS: p.OS, Arch: p.Arch}
 	}
 
-	var ofsClient storage.OFSClient
+	var ofsClient *storage.Client
 	if cfg.OrangeFS.Endpoint != "" {
 		c, err := storage.New(cfg.OrangeFS.Endpoint, cfg.OrangeFS.Volume, cfg.OrangeFS.AccessKey, cfg.OrangeFS.SecretKey)
 		if err != nil {
@@ -124,10 +124,18 @@ func main() {
 	}
 
 	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform, cfg.Sandbox.MemoryLimit, cfg.Sandbox.CPULimit)
+
+	kindsRepo := db.NewKindsRepository(gormDB)
+	if ofsClient != nil {
+		mgr.WithResources(kindsRepo, ofsClient)
+	}
+
 	router := api.NewRouter(api.RouterDeps{
 		Store:       repo,
 		Manager:     mgr,
 		FileStore:   ofsClient,
+		KindsRepo:   kindsRepo,
+		OFSWriter:   ofsClient,
 		CORSOrigin:  cfg.Server.CORSOrigin,
 		DB:          gormDB,
 		Redis:       rdb,

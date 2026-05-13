@@ -45,6 +45,7 @@ func (s State) String() string {
 type Task struct {
 	ID       string
 	Username string // owner; immutable after construction
+	UserID   uint   // owner's DB primary key; immutable after construction
 
 	mu           sync.RWMutex
 	state        State  // sandbox liveness (see State constants above)

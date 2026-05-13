@@ -9,6 +9,7 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 	_ "github.com/your-org/platform-backend/docs"
 	"github.com/your-org/platform-backend/internal/auth"
+	"github.com/your-org/platform-backend/internal/db"
 	oidcpkg "github.com/your-org/platform-backend/internal/oidc"
 	"github.com/your-org/platform-backend/internal/sandbox"
 	ssopkg "github.com/your-org/platform-backend/internal/sso"
@@ -21,6 +22,8 @@ type RouterDeps struct {
 	Store       TaskStore
 	Manager     SandboxManager
 	FileStore   FileStore
+	KindsRepo   db.KindsRepository // nil → resource API unavailable
+	OFSWriter   ResourceWriter     // nil → resource content upload unavailable
 	CORSOrigin  string
 	DB          *gorm.DB      // nil → auth disabled (dev mode)
 	Redis       *redis.Client // nil → CLI OIDC flow unavailable
@@ -32,6 +35,9 @@ type RouterDeps struct {
 // NewRouter builds the HTTP handler for the tasks API.
 func NewRouter(deps RouterDeps) http.Handler {
 	h := NewHandler(deps.Store, deps.Manager, sandbox.NewProxy(), deps.FileStore)
+	if deps.KindsRepo != nil {
+		h.withResources(deps.KindsRepo, deps.OFSWriter)
+	}
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -59,17 +65,22 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.GET("/api/runtime-config", runtimeConfigHandler(deps.Cfg, deps.OIDCService, deps.SSOService))
 
 	// ── Protected task routes ───────────────────────────────────────────────
-	protected := r.Group("/api/tasks")
+	protected := r.Group("/api")
 	protected.Use(auth.BearerAuth(deps.Cfg.Auth.SecretKey, deps.DB))
 	{
-		protected.GET("", h.ListTasks)
-		protected.POST("", h.CreateTask)
-		protected.POST("/:id/messages", h.SendMessage)
-		protected.GET("/:id", h.GetTask)
-		protected.GET("/:id/history", h.GetTaskHistory)
-		protected.DELETE("/:id", h.DeleteTask)
-		protected.POST("/:id/permissions", h.RespondToPermission)
-		protected.POST("/:id/questions", h.RespondToQuestion)
+		protected.GET("/tasks", h.ListTasks)
+		protected.POST("/tasks", h.CreateTask)
+		protected.POST("/tasks/:id/messages", h.SendMessage)
+		protected.GET("/tasks/:id", h.GetTask)
+		protected.GET("/tasks/:id/history", h.GetTaskHistory)
+		protected.DELETE("/tasks/:id", h.DeleteTask)
+		protected.POST("/tasks/:id/permissions", h.RespondToPermission)
+		protected.POST("/tasks/:id/questions", h.RespondToQuestion)
+
+		protected.POST("/resources", h.CreateResource)
+		protected.GET("/resources", h.ListResources)
+		protected.PUT("/resources/:id", h.UpdateResource)
+		protected.DELETE("/resources/:id", h.DeleteResource)
 	}
 
 	r.GET("/health", h.Health)
@@ -123,7 +134,7 @@ func runtimeConfigHandler(cfg *config.Config, oidcSvc *oidcpkg.Service, ssoSvc *
 func corsMiddleware(origin string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", origin)
-		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)

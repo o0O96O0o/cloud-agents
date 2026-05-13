@@ -10,7 +10,7 @@ func Open(dsn string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&User{}, &Task{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Task{}, &Kind{}); err != nil {
 		return nil, err
 	}
 	return db, nil

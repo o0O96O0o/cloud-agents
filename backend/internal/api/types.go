@@ -1,6 +1,9 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type createTaskRequest struct {
 	Username string            `json:"username" binding:"required"`
@@ -42,4 +45,28 @@ type taskListItem struct {
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type createResourceRequest struct {
+	Kind    string          `json:"kind" binding:"required"`
+	Name    string          `json:"name" binding:"required"`
+	Content string          `json:"content"`
+	Meta    json.RawMessage `json:"meta,omitempty"`
+}
+
+type updateResourceRequest struct {
+	Content  string          `json:"content,omitempty"`
+	Meta     json.RawMessage `json:"meta,omitempty"`
+	IsActive *bool           `json:"is_active,omitempty"`
+}
+
+type resourceResponse struct {
+	ID        int             `json:"id"`
+	Kind      string          `json:"kind"`
+	Name      string          `json:"name"`
+	OFSPath   string          `json:"ofs_path"`
+	Meta      json.RawMessage `json:"meta"`
+	IsActive  bool            `json:"is_active"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }

@@ -9,6 +9,7 @@ Three principal entities form the backend data model. Their storage, lifetimes, 
 | **User** | `user.id` (uint, auto-increment) | Permanent | MySQL `users` |
 | **Task** | `task_id` (UUID) | Permanent | MySQL `tasks` + Redis |
 | **Sandbox** | `sandbox_id` (OpenSandbox string) | Ephemeral | Redis `sandbox:{task_id}` |
+| **Resource** | `kind.id` (int, auto-increment) | Permanent | MySQL `kinds` + OFS S3 |
 
 ---
 
@@ -48,8 +49,23 @@ erDiagram
     }
 
     USER ||--o{ TASK          : "owns"
+    USER ||--o{ KIND          : "owns"
     TASK ||--o| SANDBOX_REDIS : "routes to (transient)"
     TASK ||--o| OFS_SESSION   : "history stored under task_id"
+```
+
+Where `KIND` is:
+
+```
+KIND {
+    int    id           PK
+    uint   user_id      FK
+    string kind             "skill | mcp"
+    string name
+    string ofs_path         "S3 key prefix (skill) or full key (mcp)"
+    json   meta             "MCP config; {} for skills"
+    bool   is_active
+}
 ```
 
 ---
@@ -63,6 +79,9 @@ erDiagram
 │  users:  id │ user_name │ email │ password_hash │ is_active │ auth_source  │
 │  tasks:  id │ user_id(FK) │ state │ title │ session_id │ extra_env │       │
 │             │ provisioned │ created_at │ updated_at                        │
+│  kinds:  id │ user_id(FK) │ kind │ name │ ofs_path │ meta(JSON) │          │
+│             │ is_active │ created_at │ updated_at                          │
+│             │ UNIQUE(user_id, kind, name)                                  │
 └───────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -101,6 +120,13 @@ erDiagram
 - **Cardinality:** one-to-many (`user.id` → `task.user_id`)
 - **Constraint:** `ON DELETE CASCADE` — deleting a user removes all their tasks
 - **Join key at API layer:** `username` string (tasks are created and listed by username; the repository resolves to `user_id` internally)
+
+### User → Kind
+
+- **Cardinality:** one-to-many (`user.id` → `kinds.user_id`)
+- **Constraint:** `ON DELETE CASCADE` — deleting a user removes all their resource records
+- **Uniqueness:** `UNIQUE(user_id, kind, name)` — a user cannot register the same name twice for the same kind
+- **OFS content:** not deleted when the DB record is deleted (OFS cleanup is out of scope)
 
 ### Task → Sandbox
 
@@ -208,3 +234,4 @@ User data in OFS (`{username}/history/...` and `{username}/.claude/...`) is **no
 - [`storage.md`](storage.md) — MySQL + Redis schema and operation sequences
 - [`resource-mapping.md`](resource-mapping.md) — Task / Sandbox / Session lifecycle and state table
 - [`ofsspec.md`](ofsspec.md) — OFS file layout and session history structure
+- [`resources.md`](resources.md) — User resources (skills/MCP): API, DB schema, OFS paths, sandbox injection

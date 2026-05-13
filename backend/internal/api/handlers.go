@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +19,8 @@ import (
 	"github.com/your-org/platform-backend/pkg/logger"
 	"gorm.io/gorm"
 )
+
+var validResourceName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // TaskStore is the storage interface for Task records.
 type TaskStore = task.Repository
@@ -38,6 +43,11 @@ type FileStore interface {
 	GetSessionMeta(ctx context.Context, username, taskID string) (*storage.SessionMeta, error)
 }
 
+// ResourceWriter writes files to OFS storage.
+type ResourceWriter interface {
+	PutObject(ctx context.Context, key string, data []byte) error
+}
+
 // MessageProxy streams a prompt from the client through to the task's sandbox.
 type MessageProxy interface {
 	// StreamMessage forwards prompt to the sandbox associated with t and writes
@@ -57,6 +67,8 @@ type Handler struct {
 	manager   SandboxManager
 	proxy     MessageProxy
 	fileStore FileStore
+	kindsRepo db.KindsRepository // optional; nil disables resource API
+	ofsWriter ResourceWriter     // optional; nil disables resource content upload
 }
 
 // NewHandler constructs a Handler from its dependencies.
@@ -67,6 +79,11 @@ func NewHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy, fileSto
 		proxy:     proxy,
 		fileStore: fileStore,
 	}
+}
+
+func (h *Handler) withResources(kr db.KindsRepository, w ResourceWriter) {
+	h.kindsRepo = kr
+	h.ofsWriter = w
 }
 
 // PasswordLogin returns a handler for POST /api/auth/login (username + password).
@@ -533,4 +550,214 @@ func (h *Handler) ListTasks(c *gin.Context) {
 // @Router       /health [get]
 func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, healthResponse{Status: "ok"})
+}
+
+// CreateResource handles POST /api/resources.
+func (h *Handler) CreateResource(c *gin.Context) {
+	if h.kindsRepo == nil || h.ofsWriter == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var body createResourceRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if body.Kind != "skill" && body.Kind != "mcp" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be 'skill' or 'mcp'"})
+		return
+	}
+	if !validResourceName.MatchString(body.Name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name must match ^[a-zA-Z0-9_-]+$"})
+		return
+	}
+
+	var ofsPath string
+	var meta json.RawMessage
+	var ofsKey string
+	var ofsContent []byte
+
+	switch body.Kind {
+	case "skill":
+		ofsPath = fmt.Sprintf("%s/resources/skills/%s/", u.UserName, body.Name)
+		ofsKey = ofsPath + "SKILL.md"
+		ofsContent = []byte(body.Content)
+		meta = body.Meta
+		if len(meta) == 0 {
+			meta = json.RawMessage("{}")
+		}
+	case "mcp":
+		ofsPath = fmt.Sprintf("%s/resources/mcp/%s.json", u.UserName, body.Name)
+		ofsKey = ofsPath
+		raw := body.Meta
+		if len(raw) == 0 {
+			raw = json.RawMessage(body.Content)
+		}
+		if !json.Valid(raw) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "mcp meta must be valid JSON"})
+			return
+		}
+		meta = raw
+		ofsContent = []byte(meta)
+	}
+
+	if err := h.ofsWriter.PutObject(c.Request.Context(), ofsKey, ofsContent); err != nil {
+		log.Printf("put resource to OFS %s: %v", ofsKey, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store resource"})
+		return
+	}
+
+	rec, err := h.kindsRepo.Create(c.Request.Context(), u.ID, body.Kind, body.Name, ofsPath, meta)
+	if err != nil {
+		log.Printf("create kind record: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create resource"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, kindRecordToResponse(rec))
+}
+
+// ListResources handles GET /api/resources.
+func (h *Handler) ListResources(c *gin.Context) {
+	if h.kindsRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	records, err := h.kindsRepo.List(c.Request.Context(), u.ID)
+	if err != nil {
+		log.Printf("list resources for user %d: %v", u.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list resources"})
+		return
+	}
+
+	items := make([]resourceResponse, len(records))
+	for i, r := range records {
+		items[i] = kindRecordToResponse(r)
+	}
+	c.JSON(http.StatusOK, items)
+}
+
+// UpdateResource handles PUT /api/resources/:id.
+func (h *Handler) UpdateResource(c *gin.Context) {
+	if h.kindsRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var body updateResourceRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	update := db.KindUpdate{IsActive: body.IsActive}
+
+	if body.Content != "" {
+		if h.ofsWriter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+			return
+		}
+		rec, err := h.kindsRepo.Get(c.Request.Context(), id, u.ID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+			return
+		}
+
+		var ofsKey string
+		var ofsContent []byte
+		switch rec.Kind {
+		case "skill":
+			ofsKey = rec.OFSPath + "SKILL.md"
+			ofsContent = []byte(body.Content)
+		case "mcp":
+			if !json.Valid([]byte(body.Content)) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "content must be valid JSON for mcp kind"})
+				return
+			}
+			ofsKey = rec.OFSPath
+			ofsContent = []byte(body.Content)
+			update.Meta = json.RawMessage(body.Content)
+		}
+
+		if err := h.ofsWriter.PutObject(c.Request.Context(), ofsKey, ofsContent); err != nil {
+			log.Printf("update resource in OFS %s: %v", ofsKey, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update resource"})
+			return
+		}
+	}
+
+	if len(body.Meta) > 0 && update.Meta == nil {
+		update.Meta = body.Meta
+	}
+
+	result, err := h.kindsRepo.Update(c.Request.Context(), id, u.ID, update)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, kindRecordToResponse(result))
+}
+
+// DeleteResource handles DELETE /api/resources/:id.
+func (h *Handler) DeleteResource(c *gin.Context) {
+	if h.kindsRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := h.kindsRepo.Delete(c.Request.Context(), id, u.ID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+	c.Writer.WriteHeaderNow()
+}
+
+func kindRecordToResponse(r *db.KindRecord) resourceResponse {
+	return resourceResponse{
+		ID:        r.ID,
+		Kind:      r.Kind,
+		Name:      r.Name,
+		OFSPath:   r.OFSPath,
+		Meta:      r.Meta,
+		IsActive:  r.IsActive,
+		CreatedAt: r.CreatedAt,
+		UpdatedAt: r.UpdatedAt,
+	}
 }

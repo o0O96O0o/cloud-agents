@@ -54,6 +54,7 @@ func (r *MySQLRepository) Create(ctx context.Context, username string, extraEnv 
 	t := &Task{
 		ID:       id,
 		Username: username,
+		UserID:   user.ID,
 		state:    StateNew,
 		extraEnv: extraEnv,
 	}
@@ -98,6 +99,7 @@ func (r *MySQLRepository) Get(ctx context.Context, id string) (*Task, error) {
 	t := &Task{
 		ID:           id,
 		Username:     rec.User.UserName,
+		UserID:       rec.UserID,
 		state:        State(rec.State),
 		sandboxID:    sandboxID,
 		proxyBaseURL: proxyBaseURL,

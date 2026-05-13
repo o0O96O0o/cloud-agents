@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/your-org/platform-backend/internal/db"
 	"github.com/your-org/platform-backend/internal/task"
 )
 
@@ -590,3 +593,357 @@ func TestHTTPHealthChecker_HealthCheckURLPassedToChecker(t *testing.T) {
 		t.Errorf("health check path = %q, want %q", capturedPath, "/sandboxes/sb1/proxy/3000/health")
 	}
 }
+
+// ---- resource injection helpers ----
+
+// mockSandboxKindsRepo is a minimal db.KindsRepository for injection tests.
+type mockSandboxKindsRepo struct {
+	active    []*db.KindRecord
+	activeErr error
+}
+
+func (m *mockSandboxKindsRepo) Create(_ context.Context, _ uint, _, _, _ string, _ json.RawMessage) (*db.KindRecord, error) {
+	return nil, nil
+}
+func (m *mockSandboxKindsRepo) Get(_ context.Context, _ int, _ uint) (*db.KindRecord, error) {
+	return nil, nil
+}
+func (m *mockSandboxKindsRepo) List(_ context.Context, _ uint) ([]*db.KindRecord, error) {
+	return nil, nil
+}
+func (m *mockSandboxKindsRepo) ListActive(_ context.Context, _ uint) ([]*db.KindRecord, error) {
+	return m.active, m.activeErr
+}
+func (m *mockSandboxKindsRepo) Update(_ context.Context, _ int, _ uint, _ db.KindUpdate) (*db.KindRecord, error) {
+	return nil, nil
+}
+func (m *mockSandboxKindsRepo) Delete(_ context.Context, _ int, _ uint) error {
+	return nil
+}
+
+// mockSandboxOFSReader is a minimal ofsReader for injection tests.
+type mockSandboxOFSReader struct {
+	data map[string][]byte
+	err  error
+}
+
+func (m *mockSandboxOFSReader) GetObjectBytes(_ context.Context, key string) ([]byte, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if v, ok := m.data[key]; ok {
+		return v, nil
+	}
+	return nil, fmt.Errorf("not found: %s", key)
+}
+
+// execdCapture records a single execd PUT request.
+type execdCapture struct {
+	path   string
+	body   []byte
+	apiKey string
+}
+
+// newExecdServer returns an httptest.Server that records PUT requests and replies with status.
+func newExecdServer(t *testing.T, status int) (*httptest.Server, *[]execdCapture) {
+	t.Helper()
+	var caps []execdCapture
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "expected PUT", http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		caps = append(caps, execdCapture{
+			path:   r.URL.Path,
+			body:   body,
+			apiKey: r.Header.Get("X-OPEN-SANDBOX-API-KEY"),
+		})
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &caps
+}
+
+// sandboxTaskWithUser creates a task and sets its UserID.
+func sandboxTaskWithUser(username string, userID uint) *task.Task {
+	tsk := sandboxTask(username, nil)
+	tsk.UserID = userID
+	return tsk
+}
+
+// provisionedLC returns a lifecycle mock that creates sandbox "sb-inj" and reports Running.
+func provisionedLC() *mockLC {
+	return &mockLC{
+		createInfo:   &SandboxInfo{ID: "sb-inj"},
+		getResponses: []SandboxState{StateRunning},
+	}
+}
+
+// ---- injection tests ----
+
+func TestInjectResources_Skill(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "my-sk", OFSPath: "alice/resources/skills/my-sk/", Meta: json.RawMessage("{}")},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{
+		"alice/resources/skills/my-sk/SKILL.md": []byte("# My Skill"),
+	}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "test-key", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	if len(*caps) != 1 {
+		t.Fatalf("expected 1 execd PUT, got %d", len(*caps))
+	}
+	cap0 := (*caps)[0]
+	wantSuffix := "workspace/alice/" + tsk.ID + "/.claude/skills/my-sk/SKILL.md"
+	if !strings.HasSuffix(cap0.path, wantSuffix) {
+		t.Errorf("execd path = %q, want suffix %q", cap0.path, wantSuffix)
+	}
+	if string(cap0.body) != "# My Skill" {
+		t.Errorf("execd body = %q, want '# My Skill'", cap0.body)
+	}
+	if cap0.apiKey != "test-key" {
+		t.Errorf("X-OPEN-SANDBOX-API-KEY = %q, want test-key", cap0.apiKey)
+	}
+}
+
+func TestInjectResources_MCP(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 2, Kind: "mcp", Name: "gh", OFSPath: "alice/resources/mcp/gh.json", Meta: json.RawMessage(`{"type":"stdio","command":"npx"}`)},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "api-key", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	if len(*caps) != 1 {
+		t.Fatalf("expected 1 execd PUT for .mcp.json, got %d", len(*caps))
+	}
+	cap0 := (*caps)[0]
+	wantSuffix := "workspace/alice/" + tsk.ID + "/.mcp.json"
+	if !strings.HasSuffix(cap0.path, wantSuffix) {
+		t.Errorf("execd path = %q, want suffix %q", cap0.path, wantSuffix)
+	}
+	var mcpCfg struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(cap0.body, &mcpCfg); err != nil {
+		t.Fatalf("mcp.json body not valid JSON: %v", err)
+	}
+	if _, ok := mcpCfg.MCPServers["gh"]; !ok {
+		t.Error("expected 'gh' in mcpServers")
+	}
+}
+
+func TestInjectResources_Mixed(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "sk1", OFSPath: "alice/resources/skills/sk1/", Meta: json.RawMessage("{}")},
+		{ID: 2, Kind: "mcp", Name: "srv1", OFSPath: "alice/resources/mcp/srv1.json", Meta: json.RawMessage(`{"type":"http"}`)},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{
+		"alice/resources/skills/sk1/SKILL.md": []byte("# Skill 1"),
+	}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	// Expect 2 execd PUTs: skill file + .mcp.json.
+	if len(*caps) != 2 {
+		t.Fatalf("expected 2 execd PUTs (skill + mcp.json), got %d: %+v", len(*caps), *caps)
+	}
+}
+
+func TestInjectResources_Empty(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	if len(*caps) != 0 {
+		t.Errorf("expected no execd PUTs for empty resource list, got %d", len(*caps))
+	}
+}
+
+func TestInjectResources_Disabled_NilRepo(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+
+	// No WithResources call — kindsRepo stays nil.
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	if len(*caps) != 0 {
+		t.Errorf("expected no execd PUTs when kindsRepo is nil, got %d", len(*caps))
+	}
+}
+
+func TestInjectResources_ZeroUserID(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: json.RawMessage("{}")},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	// UserID = 0 → injection must be skipped.
+	tsk := sandboxTask("alice", nil)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	if len(*caps) != 0 {
+		t.Errorf("expected no execd PUTs for zero UserID, got %d", len(*caps))
+	}
+}
+
+func TestInjectResources_OFSError_NonFatal(t *testing.T) {
+	execdSrv, _ := newExecdServer(t, http.StatusOK)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: json.RawMessage("{}")},
+	}}
+	ofs := &mockSandboxOFSReader{err: errors.New("OFS unavailable")}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	// OFS failure must not abort provisioning.
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask must succeed even when OFS fails: %v", err)
+	}
+	if tsk.GetState() != task.StateRunning {
+		t.Error("task must reach StateRunning despite OFS error")
+	}
+}
+
+func TestInjectResources_ExecdError_NonFatal(t *testing.T) {
+	execdSrv, _ := newExecdServer(t, http.StatusInternalServerError)
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: json.RawMessage("{}")},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{
+		"alice/resources/skills/sk/SKILL.md": []byte("# Skill"),
+	}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "k", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	// execd 500 must not abort provisioning.
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask must succeed even when execd returns 500: %v", err)
+	}
+	if tsk.GetState() != task.StateRunning {
+		t.Error("task must reach StateRunning despite execd error")
+	}
+}
+
+// ---- writeFile unit tests ----
+
+func TestWriteFile_PathConstruction(t *testing.T) {
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	mgr := &Manager{serverURL: srv.URL, apiKey: "k", httpClient: srv.Client()}
+	if err := mgr.writeFile(context.Background(), "sb-x", "/workspace/alice/task1/.mcp.json", []byte("{}")); err != nil {
+		t.Fatalf("writeFile: %v", err)
+	}
+
+	want := "/sandboxes/sb-x/proxy/44772/files/workspace/alice/task1/.mcp.json"
+	if capturedPath != want {
+		t.Errorf("path = %q, want %q", capturedPath, want)
+	}
+}
+
+func TestWriteFile_AuthHeader(t *testing.T) {
+	var capturedKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedKey = r.Header.Get("X-OPEN-SANDBOX-API-KEY")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	mgr := &Manager{serverURL: srv.URL, apiKey: "secret-key", httpClient: srv.Client()}
+	if err := mgr.writeFile(context.Background(), "sb1", "/workspace/f.txt", []byte("x")); err != nil {
+		t.Fatalf("writeFile: %v", err)
+	}
+	if capturedKey != "secret-key" {
+		t.Errorf("X-OPEN-SANDBOX-API-KEY = %q, want secret-key", capturedKey)
+	}
+}
+
+func TestWriteFile_ContentType(t *testing.T) {
+	var capturedCT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCT = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	mgr := &Manager{serverURL: srv.URL, apiKey: "k", httpClient: srv.Client()}
+	if err := mgr.writeFile(context.Background(), "sb1", "/workspace/f.txt", []byte("x")); err != nil {
+		t.Fatalf("writeFile: %v", err)
+	}
+	if capturedCT != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", capturedCT)
+	}
+}
+
+func TestWriteFile_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	mgr := &Manager{serverURL: srv.URL, apiKey: "k", httpClient: srv.Client()}
+	if err := mgr.writeFile(context.Background(), "sb1", "/workspace/f.txt", []byte("x")); err == nil {
+		t.Fatal("expected error on 403, got nil")
+	}
+}
+
+// compile-time check that mockSandboxKindsRepo satisfies the interface.
+var _ db.KindsRepository = (*mockSandboxKindsRepo)(nil)

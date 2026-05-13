@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/your-org/platform-backend/internal/db"
 	"github.com/your-org/platform-backend/internal/task"
 )
 
@@ -28,6 +31,11 @@ type healthChecker interface {
 	WaitForHealth(ctx context.Context, proxyBaseURL string, headers map[string]string) error
 }
 
+// ofsReader fetches raw bytes from OFS storage.
+type ofsReader interface {
+	GetObjectBytes(ctx context.Context, key string) ([]byte, error)
+}
+
 const (
 	defaultMemoryLimit = "4Gi"
 	defaultCPULimit    = "2000m"
@@ -44,6 +52,11 @@ type Manager struct {
 	cpuLimit      string
 	agentPort     int
 	healthChecker healthChecker
+	httpClient    *http.Client
+
+	// optional: set via WithResources to enable skill/MCP injection at provision time.
+	kindsRepo db.KindsRepository
+	ofsReader ofsReader
 }
 
 func NewManager(serverURL, apiKey string, baseEnv map[string]string, image string, platform *PlatformSpec, memoryLimit, cpuLimit string) *Manager {
@@ -64,7 +77,15 @@ func NewManager(serverURL, apiKey string, baseEnv map[string]string, image strin
 		cpuLimit:      cpuLimit,
 		agentPort:     DefaultAgentPort,
 		healthChecker: newHTTPHealthChecker(&http.Client{Timeout: 5 * time.Second}),
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// WithResources enables skill and MCP injection at provision time.
+// kr supplies the active resource records; reader fetches skill file bytes from OFS.
+func (m *Manager) WithResources(kr db.KindsRepository, reader ofsReader) {
+	m.kindsRepo = kr
+	m.ofsReader = reader
 }
 
 // ProvisionForTask creates a sandbox and waits for it to be Running.
@@ -138,6 +159,12 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 		return fmt.Errorf("sandbox %s agent server not ready: %w", sandboxID, err)
 	}
 
+	if m.kindsRepo != nil && m.ofsReader != nil && t.UserID != 0 {
+		if err := m.injectResources(ctx, t.UserID, t.Username, t.ID, sandboxID); err != nil {
+			log.Printf("resource injection failed for task %s (continuing): %v", t.ID, err)
+		}
+	}
+
 	t.SetRunning(sandboxID, proxyBaseURL, proxyHeaders)
 	log.Printf("sandbox %s ready — proxy URL: %s", sandboxID, proxyBaseURL)
 	return nil
@@ -145,6 +172,84 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 
 func (m *Manager) DeleteSandbox(ctx context.Context, sandboxID string) error {
 	return m.lc.DeleteSandbox(ctx, sandboxID)
+}
+
+// injectResources fetches all active resources for userID and writes them into the
+// sandbox via the execd file API before the agent session is created.
+// Skills land at {taskCWD}/.claude/skills/{name}/SKILL.md (project source, auto-discovered).
+// MCP servers are composed into {taskCWD}/.mcp.json.
+func (m *Manager) injectResources(ctx context.Context, userID uint, username, taskID, sandboxID string) error {
+	kinds, err := m.kindsRepo.ListActive(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("list active resources: %w", err)
+	}
+	if len(kinds) == 0 {
+		return nil
+	}
+
+	taskCWD := fmt.Sprintf("/workspace/%s/%s", username, taskID)
+
+	type mcpConfig struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	mcp := mcpConfig{MCPServers: make(map[string]json.RawMessage)}
+
+	for _, k := range kinds {
+		switch k.Kind {
+		case "skill":
+			s3Key := k.OFSPath + "SKILL.md"
+			content, err := m.ofsReader.GetObjectBytes(ctx, s3Key)
+			if err != nil {
+				return fmt.Errorf("fetch skill %q from OFS: %w", k.Name, err)
+			}
+			skillPath := fmt.Sprintf("%s/.claude/skills/%s/SKILL.md", taskCWD, k.Name)
+			if err := m.writeFile(ctx, sandboxID, skillPath, content); err != nil {
+				return fmt.Errorf("write skill %q to sandbox: %w", k.Name, err)
+			}
+			log.Printf("injected skill %q into sandbox %s", k.Name, sandboxID)
+		case "mcp":
+			mcp.MCPServers[k.Name] = k.Meta
+		}
+	}
+
+	if len(mcp.MCPServers) > 0 {
+		data, err := json.Marshal(mcp)
+		if err != nil {
+			return fmt.Errorf("marshal mcp config: %w", err)
+		}
+		mcpPath := taskCWD + "/.mcp.json"
+		if err := m.writeFile(ctx, sandboxID, mcpPath, data); err != nil {
+			return fmt.Errorf("write .mcp.json to sandbox: %w", err)
+		}
+		log.Printf("injected %d MCP server(s) into sandbox %s", len(mcp.MCPServers), sandboxID)
+	}
+
+	return nil
+}
+
+// writeFile writes content to absPath inside the sandbox via the execd proxy.
+// absPath is an absolute container path (e.g. /workspace/alice/task1/.mcp.json).
+func (m *Manager) writeFile(ctx context.Context, sandboxID, absPath string, content []byte) error {
+	relPath := strings.TrimPrefix(absPath, "/")
+	url := fmt.Sprintf("%s/sandboxes/%s/proxy/44772/files/%s", m.serverURL, sandboxID, relPath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("build execd request: %w", err)
+	}
+	req.Header.Set("X-OPEN-SANDBOX-API-KEY", m.apiKey)
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("execd PUT %s: %w", absPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("execd PUT %s: status %d: %s", absPath, resp.StatusCode, body)
+	}
+	return nil
 }
 
 // IsSandboxAlive reports whether sandboxID is still in Running state.
