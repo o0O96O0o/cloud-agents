@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,11 +170,28 @@ func TestCreateResource_Skill_Success(t *testing.T) {
 	if kr.capturedCreate.ofsPath != "alice/resources/skills/my-sk/" {
 		t.Errorf("Create ofsPath = %q", kr.capturedCreate.ofsPath)
 	}
+	// meta must be initialized with the files manifest
+	var meta db.SkillMeta
+	if err := json.Unmarshal(kr.capturedCreate.meta, &meta); err != nil {
+		t.Fatalf("meta is not valid JSON: %v", err)
+	}
+	if len(meta.Files) != 1 || meta.Files[0] != "SKILL.md" {
+		t.Errorf("meta.files = %v, want [SKILL.md]", meta.Files)
+	}
 
 	var resp map[string]any
 	json.NewDecoder(rw.Body).Decode(&resp)
 	if resp["kind"] != "skill" {
 		t.Errorf("response kind = %v", resp["kind"])
+	}
+}
+
+func TestCreateResource_Skill_EmptyContent_Rejected(t *testing.T) {
+	h := resourceHandler(&mockKindsRepo{}, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPost, "/api/resources", `{"kind":"skill","name":"my-sk"}`)
+	h.CreateResource(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing skill content, got %d", rw.Code)
 	}
 }
 
@@ -535,6 +553,218 @@ func TestDeleteResource_NotFound(t *testing.T) {
 	h.DeleteResource(c)
 	if rw.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rw.Code)
+	}
+}
+
+// ---- UpsertSkillFile ----
+
+func skillRecord() *db.KindRecord {
+	meta, _ := json.Marshal(db.SkillMeta{Files: []string{"SKILL.md"}})
+	return &db.KindRecord{
+		ID: 1, Kind: "skill", Name: "my-sk",
+		OFSPath: "alice/resources/skills/my-sk/",
+		Meta:    meta, IsActive: true,
+	}
+}
+
+func TestUpsertSkillFile_NotConfigured(t *testing.T) {
+	h := resourceHandler(nil, nil)
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/scripts/helper.py", "#!/usr/bin/env python3")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/scripts/helper.py"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_InvalidID(t *testing.T) {
+	h := resourceHandler(&mockKindsRepo{}, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPut, "/api/resources/abc/files/SKILL.md", "# hi")
+	c.Params = gin.Params{{Key: "id", Value: "abc"}, {Key: "filepath", Value: "/SKILL.md"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-numeric id, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_InvalidPath_DotDot(t *testing.T) {
+	h := resourceHandler(&mockKindsRepo{}, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/../etc/passwd", "x")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/../etc/passwd"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for path traversal, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_FileTooLarge(t *testing.T) {
+	kr := &mockKindsRepo{getRec: skillRecord()}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	bigBody := strings.Repeat("x", maxSkillFileSize+1)
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/big.txt", bigBody)
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/big.txt"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413 for oversized file, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_NotFound(t *testing.T) {
+	kr := &mockKindsRepo{getErr: errTest}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/helper.py", "code")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_NotSkillKind(t *testing.T) {
+	mcpRec := &db.KindRecord{ID: 1, Kind: "mcp", Name: "gh", OFSPath: "alice/resources/mcp/gh.json", Meta: json.RawMessage(`{}`)}
+	kr := &mockKindsRepo{getRec: mcpRec}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/helper.py", "code")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-skill kind, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_ExceedMaxFiles(t *testing.T) {
+	files := make([]string, maxSkillFiles)
+	for i := range files {
+		files[i] = fmt.Sprintf("file%d.txt", i)
+	}
+	fullMeta, _ := json.Marshal(db.SkillMeta{Files: files})
+	rec := &db.KindRecord{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: fullMeta}
+	kr := &mockKindsRepo{getRec: rec}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/extra.txt", "x")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/extra.txt"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 when exceeding max files, got %d", rw.Code)
+	}
+}
+
+func TestUpsertSkillFile_NewFile_UpdatesMeta(t *testing.T) {
+	kr := &mockKindsRepo{getRec: skillRecord()}
+	w := &mockOFSWriter{}
+	h := resourceHandler(kr, w)
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/scripts/helper.py", "#!/usr/bin/env python3")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/scripts/helper.py"}}
+	h.UpsertSkillFile(c)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rw.Code, rw.Body)
+	}
+	if w.capturedKey != "alice/resources/skills/my-sk/scripts/helper.py" {
+		t.Errorf("OFS key = %q", w.capturedKey)
+	}
+	var meta db.SkillMeta
+	json.Unmarshal(kr.capturedUpdate.Meta, &meta)
+	if len(meta.Files) != 2 || meta.Files[1] != "scripts/helper.py" {
+		t.Errorf("updated meta.files = %v, want [SKILL.md scripts/helper.py]", meta.Files)
+	}
+}
+
+func TestUpsertSkillFile_ExistingFile_NoMetaUpdate(t *testing.T) {
+	meta, _ := json.Marshal(db.SkillMeta{Files: []string{"SKILL.md", "helper.py"}})
+	rec := &db.KindRecord{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: meta}
+	kr := &mockKindsRepo{getRec: rec}
+	w := &mockOFSWriter{}
+	h := resourceHandler(kr, w)
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/helper.py", "updated code")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.UpsertSkillFile(c)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rw.Code, rw.Body)
+	}
+	if w.capturedKey != "alice/resources/skills/sk/helper.py" {
+		t.Errorf("OFS key = %q", w.capturedKey)
+	}
+	// existing file: repo Update must NOT be called (meta unchanged)
+	if kr.capturedUpdate.Meta != nil {
+		t.Errorf("expected no meta update for existing file, got %s", kr.capturedUpdate.Meta)
+	}
+}
+
+func TestUpsertSkillFile_OFSError(t *testing.T) {
+	kr := &mockKindsRepo{getRec: skillRecord()}
+	w := &mockOFSWriter{err: errTest}
+	h := resourceHandler(kr, w)
+	rw, c := authedContext(http.MethodPut, "/api/resources/1/files/helper.py", "code")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.UpsertSkillFile(c)
+	if rw.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on OFS error, got %d", rw.Code)
+	}
+}
+
+// ---- DeleteSkillFile ----
+
+func TestDeleteSkillFile_NotConfigured(t *testing.T) {
+	h := resourceHandler(nil, nil)
+	rw, c := authedContext(http.MethodDelete, "/api/resources/1/files/helper.py", "")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.DeleteSkillFile(c)
+	if rw.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rw.Code)
+	}
+}
+
+func TestDeleteSkillFile_CannotRemoveSKILLMD(t *testing.T) {
+	h := resourceHandler(&mockKindsRepo{}, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodDelete, "/api/resources/1/files/SKILL.md", "")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/SKILL.md"}}
+	h.DeleteSkillFile(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when removing SKILL.md, got %d", rw.Code)
+	}
+}
+
+func TestDeleteSkillFile_FileNotInManifest(t *testing.T) {
+	kr := &mockKindsRepo{getRec: skillRecord()}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodDelete, "/api/resources/1/files/nonexistent.py", "")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/nonexistent.py"}}
+	h.DeleteSkillFile(c)
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for file not in manifest, got %d", rw.Code)
+	}
+}
+
+func TestDeleteSkillFile_Success(t *testing.T) {
+	meta, _ := json.Marshal(db.SkillMeta{Files: []string{"SKILL.md", "helper.py"}})
+	rec := &db.KindRecord{ID: 1, Kind: "skill", Name: "sk", OFSPath: "alice/resources/skills/sk/", Meta: meta}
+	kr := &mockKindsRepo{getRec: rec}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodDelete, "/api/resources/1/files/helper.py", "")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.DeleteSkillFile(c)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rw.Code, rw.Body)
+	}
+	var updatedMeta db.SkillMeta
+	json.Unmarshal(kr.capturedUpdate.Meta, &updatedMeta)
+	if len(updatedMeta.Files) != 1 || updatedMeta.Files[0] != "SKILL.md" {
+		t.Errorf("after delete, meta.files = %v, want [SKILL.md]", updatedMeta.Files)
+	}
+}
+
+func TestDeleteSkillFile_NotSkillKind(t *testing.T) {
+	mcpRec := &db.KindRecord{ID: 1, Kind: "mcp", Name: "gh", OFSPath: "alice/resources/mcp/gh.json", Meta: json.RawMessage(`{}`)}
+	kr := &mockKindsRepo{getRec: mcpRec}
+	h := resourceHandler(kr, &mockOFSWriter{})
+	rw, c := authedContext(http.MethodDelete, "/api/resources/1/files/helper.py", "")
+	c.Params = gin.Params{{Key: "id", Value: "1"}, {Key: "filepath", Value: "/helper.py"}}
+	h.DeleteSkillFile(c)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-skill kind, got %d", rw.Code)
 	}
 }
 

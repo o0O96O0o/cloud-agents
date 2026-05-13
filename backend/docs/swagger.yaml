@@ -1,19 +1,20 @@
 basePath: /
 definitions:
-  github_com_your-org_platform-backend_internal_storage.ConversationEntry:
+  internal_api.createResourceRequest:
     properties:
-      isMeta:
-        type: boolean
-      message:
-        type: object
-      parentUuid:
+      content:
         type: string
-      timestamp:
+      kind:
         type: string
-      type:
+      meta:
+        items:
+          type: integer
+        type: array
+      name:
         type: string
-      uuid:
-        type: string
+    required:
+    - kind
+    - name
     type: object
   internal_api.createTaskRequest:
     properties:
@@ -29,6 +30,11 @@ definitions:
   internal_api.createTaskResponse:
     properties:
       id:
+        type: string
+    type: object
+  internal_api.errorResponse:
+    properties:
+      error:
         type: string
     type: object
   internal_api.getTaskResponse:
@@ -51,6 +57,49 @@ definitions:
       status:
         type: string
     type: object
+  internal_api.passwordLoginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  internal_api.registerRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  internal_api.resourceResponse:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      kind:
+        type: string
+      meta:
+        items:
+          type: integer
+        type: array
+      name:
+        type: string
+      ofs_path:
+        type: string
+      updated_at:
+        type: string
+    type: object
   internal_api.respondToPermissionRequest:
     properties:
       decision:
@@ -67,12 +116,78 @@ definitions:
     required:
     - answers
     type: object
+  internal_api.runtimeConfigResponse:
+    properties:
+      allowRegister:
+        type: boolean
+      loginMode:
+        type: string
+      oidcLoginText:
+        type: string
+      passwordLogin:
+        type: boolean
+      ssoLoginText:
+        type: string
+    type: object
   internal_api.sendMessageRequest:
     properties:
       prompt:
         type: string
     required:
     - prompt
+    type: object
+  internal_api.taskListItem:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      state:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  internal_api.tokenResponse:
+    properties:
+      access_token:
+        type: string
+    type: object
+  internal_api.updateResourceRequest:
+    properties:
+      content:
+        type: string
+      is_active:
+        type: boolean
+      meta:
+        items:
+          type: integer
+        type: array
+    type: object
+  internal_oidc.cliLoginRequest:
+    properties:
+      session_id:
+        type: string
+    required:
+    - session_id
+    type: object
+  internal_oidc.cliLoginResponse:
+    properties:
+      auth_url:
+        type: string
+    type: object
+  internal_oidc.cliPollResponse:
+    properties:
+      status:
+        type: string
+      token:
+        type: string
+    type: object
+  internal_oidc.errorResponse:
+    properties:
+      error:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -81,7 +196,552 @@ info:
   title: Platform Backend API
   version: "1.0"
 paths:
+  /api/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate with username + password and receive an access token.
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.passwordLoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.tokenResponse'
+        "400":
+          description: username and password required
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: invalid credentials
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: internal error
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Password login
+      tags:
+      - auth
+  /api/auth/oidc/callback:
+    get:
+      description: Verifies state and id_token returned by the OIDC provider, issues
+        an app JWT, and redirects to the frontend with the token in the URL fragment.
+      parameters:
+      - description: State JWT issued during /api/auth/oidc/login
+        in: query
+        name: state
+        required: true
+        type: string
+      - description: Authorization code from the OIDC provider
+        in: query
+        name: code
+        required: true
+        type: string
+      responses:
+        "302":
+          description: Found
+        "400":
+          description: invalid state
+          schema:
+            type: string
+        "401":
+          description: id_token verification failed
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+        "502":
+          description: code exchange failed or missing id_token
+          schema:
+            type: string
+      summary: OIDC browser callback
+      tags:
+      - auth
+  /api/auth/oidc/cli-callback:
+    get:
+      description: Verifies the OIDC response for a CLI flow and stores the issued
+        app token in Redis under the session ID.
+      parameters:
+      - description: State JWT issued during cli-login
+        in: query
+        name: state
+        required: true
+        type: string
+      - description: Authorization code from the OIDC provider
+        in: query
+        name: code
+        required: true
+        type: string
+      responses:
+        "200":
+          description: Authentication successful
+          schema:
+            type: string
+        "400":
+          description: invalid state or missing cli session
+          schema:
+            type: string
+        "401":
+          description: id_token verification failed
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+        "502":
+          description: code exchange failed or failed to store session
+          schema:
+            type: string
+      summary: OIDC CLI callback
+      tags:
+      - auth
+  /api/auth/oidc/cli-login:
+    post:
+      consumes:
+      - application/json
+      description: Creates a pending Redis session keyed by session_id and returns
+        the browser auth URL the CLI should open.
+      parameters:
+      - description: CLI session
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_oidc.cliLoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_oidc.cliLoginResponse'
+        "400":
+          description: session_id required
+          schema:
+            $ref: '#/definitions/internal_oidc.errorResponse'
+        "500":
+          description: failed to build state or auth URL
+          schema:
+            $ref: '#/definitions/internal_oidc.errorResponse'
+      summary: Start CLI OIDC login
+      tags:
+      - auth
+  /api/auth/oidc/cli-poll:
+    get:
+      description: Returns the status of a CLI login session. When status is "completed"
+        the response also contains the issued access token, and the session is deleted.
+      parameters:
+      - description: CLI session ID
+        in: query
+        name: session_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_oidc.cliPollResponse'
+        "400":
+          description: session_id required
+          schema:
+            $ref: '#/definitions/internal_oidc.errorResponse'
+        "404":
+          description: session not found
+          schema:
+            $ref: '#/definitions/internal_oidc.errorResponse'
+        "500":
+          description: redis error or invalid session data
+          schema:
+            $ref: '#/definitions/internal_oidc.errorResponse'
+      summary: Poll CLI OIDC session
+      tags:
+      - auth
+  /api/auth/oidc/login:
+    get:
+      description: Redirects the browser to the OIDC provider's authorization endpoint.
+        The optional ?redirect= is preserved through the flow.
+      parameters:
+      - description: Frontend redirect target after callback
+        in: query
+        name: redirect
+        type: string
+      responses:
+        "302":
+          description: Found
+        "500":
+          description: failed to build state or auth URL
+          schema:
+            type: string
+      summary: OIDC browser login
+      tags:
+      - auth
+  /api/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Create a new local user account and receive an access token.
+      parameters:
+      - description: Registration request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.registerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.tokenResponse'
+        "400":
+          description: username and password required
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "409":
+          description: username already taken
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to issue token
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Register a user
+      tags:
+      - auth
+  /api/auth/sso/callback:
+    get:
+      description: Exchanges the SSO code for a ticket, fetches user info, issues
+        an app JWT, then redirects to the frontend with the token in the URL fragment.
+      parameters:
+      - description: SSO authorization code
+        in: query
+        name: code
+        required: true
+        type: string
+      responses:
+        "302":
+          description: Found
+        "400":
+          description: missing code
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+        "502":
+          description: SSO check_code or check_user_ticket failed
+          schema:
+            type: string
+      summary: SSO callback
+      tags:
+      - auth
+  /api/auth/sso/login:
+    get:
+      description: Redirects the browser to the Didi SSO login page. An optional ?redirect=
+        is forwarded as jumpto.
+      parameters:
+      - description: Frontend redirect target after callback
+        in: query
+        name: redirect
+        type: string
+      responses:
+        "302":
+          description: Found
+      summary: SSO login
+      tags:
+      - auth
+  /api/resources:
+    get:
+      description: List all resources owned by the authenticated user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.resourceResponse'
+            type: array
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to list resources
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: List resources
+      tags:
+      - resources
+    post:
+      consumes:
+      - application/json
+      description: Create a skill (SKILL.md) or mcp (JSON config) resource owned by
+        the authenticated user.
+      parameters:
+      - description: Resource definition
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createResourceRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.resourceResponse'
+        "400":
+          description: invalid request body
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to store resource
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Create a resource
+      tags:
+      - resources
+  /api/resources/{id}:
+    delete:
+      description: Delete a resource owned by the authenticated user. OFS content
+        is not removed.
+      parameters:
+      - description: Resource ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: invalid id
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "404":
+          description: resource not found
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Delete a resource
+      tags:
+      - resources
+    put:
+      consumes:
+      - application/json
+      description: Update a resource's content, meta, or active flag.
+      parameters:
+      - description: Resource ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Update fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.updateResourceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.resourceResponse'
+        "400":
+          description: invalid request body
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "404":
+          description: resource not found
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to update resource
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Update a resource
+      tags:
+      - resources
+  /api/resources/{id}/files/{filepath}:
+    delete:
+      description: Remove a file from a skill's manifest. SKILL.md cannot be removed;
+        OFS content is not deleted.
+      parameters:
+      - description: Resource ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Relative file path inside the skill
+        in: path
+        name: filepath
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.resourceResponse'
+        "400":
+          description: invalid id, invalid path, or SKILL.md cannot be removed
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "404":
+          description: resource or file not found
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to update resource
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Remove a file from a skill
+      tags:
+      - resources
+    put:
+      consumes:
+      - application/octet-stream
+      description: Upload (or overwrite) a single file inside a skill resource. Body
+        is the raw file content (max 1 MiB). Skills are capped at 20 files.
+      parameters:
+      - description: Resource ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Relative file path inside the skill
+        in: path
+        name: filepath
+        required: true
+        type: string
+      - description: Raw file bytes
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.resourceResponse'
+        "400":
+          description: invalid id or file path
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "401":
+          description: unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "404":
+          description: resource not found
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "413":
+          description: file exceeds size limit
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "422":
+          description: skill file count exceeds limit
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "500":
+          description: failed to store file
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+        "503":
+          description: resource storage not configured
+          schema:
+            $ref: '#/definitions/internal_api.errorResponse'
+      summary: Upload or overwrite a skill file
+      tags:
+      - resources
+  /api/runtime-config:
+    get:
+      description: Returns which login modes (password, OIDC, SSO) are available to
+        the frontend.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.runtimeConfigResponse'
+      summary: Frontend runtime config
+      tags:
+      - meta
   /api/tasks:
+    get:
+      description: Returns task summaries ordered by most recently updated.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.taskListItem'
+            type: array
+      summary: List tasks for the authenticated user
+      tags:
+      - tasks
     post:
       consumes:
       - application/json
@@ -174,10 +834,10 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Raw session entries (see @anthropic-ai/claude-agent-sdk SDKMessage)
           schema:
             items:
-              $ref: '#/definitions/github_com_your-org_platform-backend_internal_storage.ConversationEntry'
+              type: object
             type: array
         "404":
           description: task not found

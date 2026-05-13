@@ -202,19 +202,24 @@ func (m *Manager) injectResources(ctx context.Context, userID uint, username, ta
 		switch k.Kind {
 		case "skill":
 			skillNameDir := skillsDir + "/" + k.Name
-			if err := m.makeDirAll(ctx, sandboxID, skillNameDir); err != nil {
-				return fmt.Errorf("create skill dir %q: %w", k.Name, err)
+			skillFiles := k.SkillFiles()
+			for _, relPath := range skillFiles {
+				targetDir := skillNameDir
+				if sub := path.Dir(relPath); sub != "." {
+					targetDir = skillNameDir + "/" + sub
+				}
+				if err := m.makeDirAll(ctx, sandboxID, targetDir); err != nil {
+					return fmt.Errorf("create dir for %q in skill %q: %w", relPath, k.Name, err)
+				}
+				content, err := m.ofsReader.GetObjectBytes(ctx, k.OFSPath+relPath)
+				if err != nil {
+					return fmt.Errorf("fetch %q from skill %q: %w", relPath, k.Name, err)
+				}
+				if err := m.writeFile(ctx, sandboxID, skillNameDir+"/"+relPath, content); err != nil {
+					return fmt.Errorf("write %q in skill %q: %w", relPath, k.Name, err)
+				}
 			}
-			s3Key := k.OFSPath + "SKILL.md"
-			content, err := m.ofsReader.GetObjectBytes(ctx, s3Key)
-			if err != nil {
-				return fmt.Errorf("fetch skill %q from OFS: %w", k.Name, err)
-			}
-			skillPath := skillNameDir + "/SKILL.md"
-			if err := m.writeFile(ctx, sandboxID, skillPath, content); err != nil {
-				return fmt.Errorf("write skill %q to sandbox: %w", k.Name, err)
-			}
-			slog.InfoContext(ctx, "injected skill", "name", k.Name, "sandboxID", sandboxID)
+			slog.InfoContext(ctx, "injected skill", "name", k.Name, "files", len(skillFiles), "sandboxID", sandboxID)
 		case "mcp":
 			mcp.MCPServers[k.Name] = k.Meta
 		}

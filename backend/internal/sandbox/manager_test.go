@@ -973,5 +973,53 @@ func TestWriteFile_HTTPError(t *testing.T) {
 	}
 }
 
+func TestInjectResources_Skill_MultiFile(t *testing.T) {
+	execdSrv, caps := newExecdServer(t, http.StatusOK)
+	skillMeta, _ := json.Marshal(db.SkillMeta{Files: []string{"SKILL.md", "scripts/helper.py"}})
+	kr := &mockSandboxKindsRepo{active: []*db.KindRecord{
+		{ID: 1, Kind: "skill", Name: "my-sk", OFSPath: "alice/resources/skills/my-sk/", Meta: skillMeta},
+	}}
+	ofs := &mockSandboxOFSReader{data: map[string][]byte{
+		"alice/resources/skills/my-sk/SKILL.md":          []byte("# My Skill"),
+		"alice/resources/skills/my-sk/scripts/helper.py": []byte("#!/usr/bin/env python3"),
+	}}
+
+	mgr := newTestManager(provisionedLC(), execdSrv.URL, "test-key", nil)
+	mgr.httpClient = execdSrv.Client()
+	mgr.WithResources(kr, ofs)
+
+	tsk := sandboxTaskWithUser("alice", 1)
+	if err := mgr.ProvisionForTask(context.Background(), tsk); err != nil {
+		t.Fatalf("ProvisionForTask: %v", err)
+	}
+
+	// SKILL.md:        mkdir .claude/skills/my-sk  + upload SKILL.md         = 2 requests
+	// scripts/helper.py: mkdir .claude/skills/my-sk/scripts + upload helper.py = 2 requests
+	// Total: 4 requests
+	if len(*caps) != 4 {
+		t.Fatalf("expected 4 execd requests for 2-file skill, got %d: %+v", len(*caps), *caps)
+	}
+
+	wantScriptDir := fmt.Sprintf("/workspace/alice/%s/.claude/skills/my-sk/scripts", tsk.ID)
+	wantScriptFile := fmt.Sprintf("/workspace/alice/%s/.claude/skills/my-sk/scripts/helper.py", tsk.ID)
+
+	foundDir, foundFile := false, false
+	for _, cap := range *caps {
+		body := string(cap.body)
+		if cap.method == http.MethodPost && strings.Contains(body, wantScriptDir) {
+			foundDir = true
+		}
+		if strings.Contains(body, wantScriptFile) && strings.Contains(body, "#!/usr/bin/env python3") {
+			foundFile = true
+		}
+	}
+	if !foundDir {
+		t.Errorf("expected mkdir for scripts dir %q", wantScriptDir)
+	}
+	if !foundFile {
+		t.Errorf("expected file upload to %q with correct content", wantScriptFile)
+	}
+}
+
 // compile-time check that mockSandboxKindsRepo satisfies the interface.
 var _ db.KindsRepository = (*mockSandboxKindsRepo)(nil)

@@ -81,6 +81,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 		protected.GET("/resources", h.ListResources)
 		protected.PUT("/resources/:id", h.UpdateResource)
 		protected.DELETE("/resources/:id", h.DeleteResource)
+		protected.PUT("/resources/:id/files/*filepath", h.UpsertSkillFile)
+		protected.DELETE("/resources/:id/files/*filepath", h.DeleteSkillFile)
 	}
 
 	r.GET("/health", h.Health)
@@ -89,14 +91,14 @@ func NewRouter(deps RouterDeps) http.Handler {
 	return r
 }
 
-type runtimeConfigResponse struct {
-	LoginMode     string `json:"loginMode"`
-	PasswordLogin bool   `json:"passwordLogin"`
-	AllowRegister bool   `json:"allowRegister"`
-	OIDCLoginText string `json:"oidcLoginText,omitempty"`
-	SSOLoginText  string `json:"ssoLoginText,omitempty"`
-}
-
+// runtimeConfigHandler returns the auth/login modes the frontend should expose.
+//
+// @Summary      Frontend runtime config
+// @Description  Returns which login modes (password, OIDC, SSO) are available to the frontend.
+// @Tags         meta
+// @Produce      json
+// @Success      200  {object}  runtimeConfigResponse
+// @Router       /api/runtime-config [get]
 func runtimeConfigHandler(cfg *config.Config, oidcSvc *oidcpkg.Service, ssoSvc *ssopkg.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		hasOIDC := oidcSvc != nil

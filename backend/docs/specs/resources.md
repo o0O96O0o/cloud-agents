@@ -61,6 +61,24 @@ type Kind struct {
 
 `Meta` is stored as a JSON column and exposed as `json.RawMessage` in `KindRecord`. AutoMigrate registers this model alongside `User` and `Task`.
 
+#### Skill `meta` schema
+
+For `skill` resources, `meta` carries the file manifest:
+
+```json
+{ "files": ["SKILL.md", "scripts/helper.py", "data/config.yaml"] }
+```
+
+`files` is a list of relative paths from the skill OFS prefix. `SKILL.md` is always the first entry and cannot be removed. Records with `meta = {}` (created before multi-file support) default to `["SKILL.md"]` at inject time.
+
+```go
+type SkillMeta struct {
+    Files []string `json:"files"`
+}
+
+// SkillFiles() on KindRecord returns meta.Files, falling back to ["SKILL.md"].
+```
+
 ---
 
 ## Repository Interface (`internal/db/kinds_repository.go`)
@@ -101,18 +119,19 @@ All routes are under `/api/resources`, protected by `auth.BearerAuth`.
 {
     "kind":    "skill",          // required; "skill" | "mcp"
     "name":    "my-search",      // required; [a-zA-Z0-9_-]+, no spaces or slashes
-    "content": "# Skill text",   // skill content OR raw MCP JSON string
+    "content": "# Skill text",   // skill: SKILL.md body (required); mcp: raw JSON string
     "meta":    { }               // optional; for mcp, overrides content
 }
 ```
 
-For `skill`: `content` is written verbatim to OFS. `meta` in the DB record defaults to `{}`.
+For `skill`: `content` is written verbatim to OFS as `SKILL.md`. **`content` is required** — omitting it returns 400. `meta` is initialized as `{"files": ["SKILL.md"]}`.
 
 For `mcp`: the configuration is taken from `meta` (preferred) or parsed from `content` (fallback). Must be valid JSON. Written to OFS and also stored in `kinds.meta` for injection at provision time.
 
 **Validation:**
 - `kind` must be `"skill"` or `"mcp"` (other values → 400)
 - `name` must match `^[a-zA-Z0-9_-]+$` (spaces or slashes → 400)
+- For `skill`: `content` must be non-empty (→ 400 otherwise)
 - For `mcp`: content/meta must be valid JSON (→ 400 otherwise)
 
 **OFS key assignment:**
@@ -166,6 +185,39 @@ Removes the DB record. OFS content is **not** deleted (OFS cleanup is out of sco
 
 ---
 
+### `PUT /api/resources/:id/files/*filepath` — Upload a skill file
+
+Uploads or overwrites a single companion file inside a skill resource (kind must be `skill`).
+
+**Path parameter:** `*filepath` is a relative path like `scripts/helper.py` or `data/config.yaml`.
+
+**Request body:** Raw file content (binary-safe). No JSON wrapping.
+
+**Limits:**
+- Per-file size: 1 MiB (→ 413 if exceeded)
+- Max files per skill: 20 (→ 422 if a new file would exceed this)
+
+**Validation:**
+- `filepath` must match `^[a-zA-Z0-9_./-]+$` with no empty, `.`, or `..` segments (→ 400)
+- Resource must exist, be owned by user, and be of kind `skill` (→ 404 / 400)
+
+**Behavior:**
+- Writes content to OFS at `{ofs_path}{filepath}`
+- If `filepath` is new: appends it to `meta.files` and saves
+- If `filepath` already exists in `meta.files`: overwrites OFS content only, no DB update
+
+**Response:** `200 OK` with updated resource record.
+
+---
+
+### `DELETE /api/resources/:id/files/*filepath` — Remove a skill file from the manifest
+
+Removes a companion file from the skill's `meta.files` list. `SKILL.md` cannot be removed (→ 400). OFS content is **not** deleted.
+
+**Response:** `200 OK` with updated resource record, `404` if file not in manifest / resource not found, `400` for invalid path or wrong kind.
+
+---
+
 ## Sandbox Injection
 
 At sandbox provision time, after the health check passes and before `task.SetRunning()` is called, `Manager.injectResources` is invoked.
@@ -186,13 +238,21 @@ Injection failures are **non-fatal**: a log line is emitted and provisioning con
 
 ### Skill injection
 
-For each active `skill` record:
+For each active `skill` record, iterate over `meta.files` (defaults to `["SKILL.md"]` for old records with empty meta):
 
-1. For each skill: create `{taskCWD}/.claude/skills/{name}/` via execd `POST /directories` (mkdir -p semantics — `.claude/`, `.claude/skills/`, and `{name}/` are all created in one call if missing).
-2. Fetch content from OFS: `GET {ofs_path}SKILL.md`
-3. Write to sandbox via execd: `PUT {taskCWD}/.claude/skills/{name}/SKILL.md`
+For each file `relPath` in `meta.files`:
+1. Compute `targetDir = {taskCWD}/.claude/skills/{name}/{dir(relPath)}` — if `relPath` has no subdirectory, `targetDir` is `{taskCWD}/.claude/skills/{name}/`.
+2. Create `targetDir` via execd `POST /directories` (mkdir -p semantics).
+3. Fetch content from OFS: `{ofs_path}{relPath}`
+4. Write to sandbox via execd: `{taskCWD}/.claude/skills/{name}/{relPath}`
 
-No workspace directories are pre-created. `POST /directories` with body `{"/workspace/{username}/{taskID}/.claude/skills/{name}": {"mode": 755}}` creates the full path atomically. Claude Code discovers skills at `{taskCWD}/.claude/skills/{name}/SKILL.md` automatically with `setting_sources=["project"]`.
+Example for a skill with `meta.files = ["SKILL.md", "scripts/helper.py"]`:
+- Creates `.claude/skills/{name}/` and writes `SKILL.md`
+- Creates `.claude/skills/{name}/scripts/` and writes `scripts/helper.py`
+
+Backward compatibility: records with `meta = {}` (created before multi-file support) default to `["SKILL.md"]` — same single-file behavior as before.
+
+Claude Code discovers skills at `{taskCWD}/.claude/skills/{name}/SKILL.md` automatically with `setting_sources=["project"]`.
 
 ### MCP injection
 

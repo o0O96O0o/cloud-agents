@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +22,26 @@ import (
 )
 
 var validResourceName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+const (
+	maxSkillFiles    = 20
+	maxSkillFileSize = 1 << 20 // 1 MiB
+)
+
+var validSkillFilePath = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
+
+// isValidSkillFilePath checks that p is a safe relative path (no traversal, no empty segments).
+func isValidSkillFilePath(p string) bool {
+	if p == "" || !validSkillFilePath.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return false
+		}
+	}
+	return true
+}
 
 // TaskStore is the storage interface for Task records.
 type TaskStore = task.Repository
@@ -86,48 +108,64 @@ func (h *Handler) withResources(kr db.KindsRepository, w ResourceWriter) {
 	h.ofsWriter = w
 }
 
-// PasswordLogin returns a handler for POST /api/auth/login (username + password).
 // PasswordLoginHandler returns a Gin handler for POST /api/auth/login.
+//
+// @Summary      Password login
+// @Description  Authenticate with username + password and receive an access token.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        body  body      passwordLoginRequest  true  "Login credentials"
+// @Success      200   {object}  tokenResponse
+// @Failure      400   {object}  errorResponse  "username and password required"
+// @Failure      401   {object}  errorResponse  "invalid credentials"
+// @Failure      500   {object}  errorResponse  "internal error"
+// @Router       /api/auth/login [post]
 func PasswordLoginHandler(gormDB *gorm.DB, authCfg config.AuthConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var body struct {
-			Username string `json:"username" binding:"required"`
-			Password string `json:"password" binding:"required"`
-		}
+		var body passwordLoginRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+			c.JSON(http.StatusBadRequest, errorResponse{Error: "username and password required"})
 			return
 		}
 		user, err := db.FindByCredentials(gormDB, body.Username, body.Password)
 		if err != nil {
 			logger.Default().Error("password login db error", "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			c.JSON(http.StatusInternalServerError, errorResponse{Error: "internal error"})
 			return
 		}
 		if user == nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusUnauthorized, errorResponse{Error: "invalid credentials"})
 			return
 		}
 		ttl := time.Duration(authCfg.TokenTTLSeconds) * time.Second
 		token, err := auth.CreateToken(authCfg.SecretKey, ttl, user.ID, user.UserName)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
+			c.JSON(http.StatusInternalServerError, errorResponse{Error: "failed to issue token"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"access_token": token})
+		c.JSON(http.StatusOK, tokenResponse{AccessToken: token})
 	}
 }
 
 // RegisterHandler handles POST /api/auth/register (username + password + email).
+//
+// @Summary      Register a user
+// @Description  Create a new local user account and receive an access token.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        body  body      registerRequest  true  "Registration request"
+// @Success      201   {object}  tokenResponse
+// @Failure      400   {object}  errorResponse  "username and password required"
+// @Failure      409   {object}  errorResponse  "username already taken"
+// @Failure      500   {object}  errorResponse  "failed to issue token"
+// @Router       /api/auth/register [post]
 func RegisterHandler(gormDB *gorm.DB, authCfg config.AuthConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var body struct {
-			Username string `json:"username" binding:"required"`
-			Password string `json:"password" binding:"required"`
-			Email    string `json:"email"`
-		}
+		var body registerRequest
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+			c.JSON(http.StatusBadRequest, errorResponse{Error: "username and password required"})
 			return
 		}
 		if body.Email == "" {
@@ -136,16 +174,16 @@ func RegisterHandler(gormDB *gorm.DB, authCfg config.AuthConfig) gin.HandlerFunc
 		user, err := db.CreateWithPassword(gormDB, body.Username, body.Email, body.Password)
 		if err != nil {
 			logger.Default().Error("register user", "err", err)
-			c.JSON(http.StatusConflict, gin.H{"error": "username already taken"})
+			c.JSON(http.StatusConflict, errorResponse{Error: "username already taken"})
 			return
 		}
 		ttl := time.Duration(authCfg.TokenTTLSeconds) * time.Second
 		token, err := auth.CreateToken(authCfg.SecretKey, ttl, user.ID, user.UserName)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue token"})
+			c.JSON(http.StatusInternalServerError, errorResponse{Error: "failed to issue token"})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{"access_token": token})
+		c.JSON(http.StatusCreated, tokenResponse{AccessToken: token})
 	}
 }
 
@@ -362,7 +400,7 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 
 	if h.fileStore != nil {
 		if err := h.fileStore.DeleteHistory(context.Background(), username, id); err != nil {
-			log.Printf("delete history for task %s: %v", id, err)
+			log.Warn("delete history for task %s: %v", id, err)
 		}
 	}
 
@@ -565,6 +603,19 @@ func (h *Handler) Health(c *gin.Context) {
 }
 
 // CreateResource handles POST /api/resources.
+//
+// @Summary      Create a resource
+// @Description  Create a skill (SKILL.md) or mcp (JSON config) resource owned by the authenticated user.
+// @Tags         resources
+// @Accept       json
+// @Produce      json
+// @Param        body  body      createResourceRequest  true  "Resource definition"
+// @Success      201   {object}  resourceResponse
+// @Failure      400   {object}  errorResponse  "invalid request body"
+// @Failure      401   {object}  errorResponse  "unauthorized"
+// @Failure      500   {object}  errorResponse  "failed to store resource"
+// @Failure      503   {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources [post]
 func (h *Handler) CreateResource(c *gin.Context) {
 	if h.kindsRepo == nil || h.ofsWriter == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
@@ -597,13 +648,15 @@ func (h *Handler) CreateResource(c *gin.Context) {
 
 	switch body.Kind {
 	case "skill":
+		if body.Content == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "content (SKILL.md) is required for skill resources"})
+			return
+		}
 		ofsPath = fmt.Sprintf("%s/resources/skills/%s/", u.UserName, body.Name)
 		ofsKey = ofsPath + "SKILL.md"
 		ofsContent = []byte(body.Content)
-		meta = body.Meta
-		if len(meta) == 0 {
-			meta = json.RawMessage("{}")
-		}
+		initMeta, _ := json.Marshal(db.SkillMeta{Files: []string{"SKILL.md"}})
+		meta = initMeta
 	case "mcp":
 		ofsPath = fmt.Sprintf("%s/resources/mcp/%s.json", u.UserName, body.Name)
 		ofsKey = ofsPath
@@ -636,6 +689,16 @@ func (h *Handler) CreateResource(c *gin.Context) {
 }
 
 // ListResources handles GET /api/resources.
+//
+// @Summary      List resources
+// @Description  List all resources owned by the authenticated user.
+// @Tags         resources
+// @Produce      json
+// @Success      200  {array}   resourceResponse
+// @Failure      401  {object}  errorResponse  "unauthorized"
+// @Failure      500  {object}  errorResponse  "failed to list resources"
+// @Failure      503  {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources [get]
 func (h *Handler) ListResources(c *gin.Context) {
 	if h.kindsRepo == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
@@ -662,6 +725,21 @@ func (h *Handler) ListResources(c *gin.Context) {
 }
 
 // UpdateResource handles PUT /api/resources/:id.
+//
+// @Summary      Update a resource
+// @Description  Update a resource's content, meta, or active flag.
+// @Tags         resources
+// @Accept       json
+// @Produce      json
+// @Param        id    path      int                    true  "Resource ID"
+// @Param        body  body      updateResourceRequest  true  "Update fields"
+// @Success      200   {object}  resourceResponse
+// @Failure      400   {object}  errorResponse  "invalid request body"
+// @Failure      401   {object}  errorResponse  "unauthorized"
+// @Failure      404   {object}  errorResponse  "resource not found"
+// @Failure      500   {object}  errorResponse  "failed to update resource"
+// @Failure      503   {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources/{id} [put]
 func (h *Handler) UpdateResource(c *gin.Context) {
 	if h.kindsRepo == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
@@ -735,6 +813,17 @@ func (h *Handler) UpdateResource(c *gin.Context) {
 }
 
 // DeleteResource handles DELETE /api/resources/:id.
+//
+// @Summary      Delete a resource
+// @Description  Delete a resource owned by the authenticated user. OFS content is not removed.
+// @Tags         resources
+// @Param        id   path  int  true  "Resource ID"
+// @Success      204
+// @Failure      400  {object}  errorResponse  "invalid id"
+// @Failure      401  {object}  errorResponse  "unauthorized"
+// @Failure      404  {object}  errorResponse  "resource not found"
+// @Failure      503  {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources/{id} [delete]
 func (h *Handler) DeleteResource(c *gin.Context) {
 	if h.kindsRepo == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
@@ -759,6 +848,187 @@ func (h *Handler) DeleteResource(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 	c.Writer.WriteHeaderNow()
+}
+
+// UpsertSkillFile handles PUT /api/resources/:id/files/*filepath.
+// Uploads or overwrites a single file inside a skill resource.
+//
+// @Summary      Upload or overwrite a skill file
+// @Description  Upload (or overwrite) a single file inside a skill resource. Body is the raw file content (max 1 MiB). Skills are capped at 20 files.
+// @Tags         resources
+// @Accept       octet-stream
+// @Produce      json
+// @Param        id        path      int     true  "Resource ID"
+// @Param        filepath  path      string  true  "Relative file path inside the skill"
+// @Param        body      body      string  true  "Raw file bytes"
+// @Success      200       {object}  resourceResponse
+// @Failure      400       {object}  errorResponse  "invalid id or file path"
+// @Failure      401       {object}  errorResponse  "unauthorized"
+// @Failure      404       {object}  errorResponse  "resource not found"
+// @Failure      413       {object}  errorResponse  "file exceeds size limit"
+// @Failure      422       {object}  errorResponse  "skill file count exceeds limit"
+// @Failure      500       {object}  errorResponse  "failed to store file"
+// @Failure      503       {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources/{id}/files/{filepath} [put]
+func (h *Handler) UpsertSkillFile(c *gin.Context) {
+	if h.kindsRepo == nil || h.ofsWriter == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	// Gin captures *filepath with a leading "/"; strip it for a clean relative path.
+	filePath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if !isValidSkillFilePath(filePath) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path: must match [a-zA-Z0-9_./-]+ with no empty, '.', or '..' segments"})
+		return
+	}
+
+	content, err := io.ReadAll(io.LimitReader(c.Request.Body, maxSkillFileSize+1))
+	if err != nil {
+		logger.Default().Error("read skill file body", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read request body"})
+		return
+	}
+	if len(content) > maxSkillFileSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file exceeds %d MiB limit", maxSkillFileSize>>20)})
+		return
+	}
+
+	rec, err := h.kindsRepo.Get(c.Request.Context(), id, u.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+	if rec.Kind != "skill" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file management is only supported for skill resources"})
+		return
+	}
+
+	files := rec.SkillFiles()
+	isNew := true
+	for _, f := range files {
+		if f == filePath {
+			isNew = false
+			break
+		}
+	}
+	if isNew && len(files) >= maxSkillFiles {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("skill cannot exceed %d files", maxSkillFiles)})
+		return
+	}
+
+	ofsKey := rec.OFSPath + filePath
+	if err := h.ofsWriter.PutObject(c.Request.Context(), ofsKey, content); err != nil {
+		logger.Default().Error("put skill file to OFS", "key", ofsKey, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file"})
+		return
+	}
+
+	var result *db.KindRecord
+	if isNew {
+		newMeta, _ := json.Marshal(db.SkillMeta{Files: append(files, filePath)})
+		result, err = h.kindsRepo.Update(c.Request.Context(), id, u.ID, db.KindUpdate{Meta: newMeta})
+		if err != nil {
+			logger.Default().Error("update skill meta", "id", id, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update resource"})
+			return
+		}
+	} else {
+		result = rec
+	}
+
+	c.JSON(http.StatusOK, kindRecordToResponse(result))
+}
+
+// DeleteSkillFile handles DELETE /api/resources/:id/files/*filepath.
+// Removes a file from the skill's manifest. SKILL.md cannot be removed.
+// OFS content is not deleted (consistent with resource-level delete behavior).
+//
+// @Summary      Remove a file from a skill
+// @Description  Remove a file from a skill's manifest. SKILL.md cannot be removed; OFS content is not deleted.
+// @Tags         resources
+// @Produce      json
+// @Param        id        path      int     true  "Resource ID"
+// @Param        filepath  path      string  true  "Relative file path inside the skill"
+// @Success      200       {object}  resourceResponse
+// @Failure      400       {object}  errorResponse  "invalid id, invalid path, or SKILL.md cannot be removed"
+// @Failure      401       {object}  errorResponse  "unauthorized"
+// @Failure      404       {object}  errorResponse  "resource or file not found"
+// @Failure      500       {object}  errorResponse  "failed to update resource"
+// @Failure      503       {object}  errorResponse  "resource storage not configured"
+// @Router       /api/resources/{id}/files/{filepath} [delete]
+func (h *Handler) DeleteSkillFile(c *gin.Context) {
+	if h.kindsRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "resource storage not configured"})
+		return
+	}
+	u := auth.GetUser(c)
+	if u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	filePath := strings.TrimPrefix(c.Param("filepath"), "/")
+	if filePath == "SKILL.md" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "SKILL.md cannot be removed"})
+		return
+	}
+	if !isValidSkillFilePath(filePath) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path"})
+		return
+	}
+
+	rec, err := h.kindsRepo.Get(c.Request.Context(), id, u.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+	if rec.Kind != "skill" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file management is only supported for skill resources"})
+		return
+	}
+
+	files := rec.SkillFiles()
+	newFiles := make([]string, 0, len(files))
+	found := false
+	for _, f := range files {
+		if f == filePath {
+			found = true
+			continue
+		}
+		newFiles = append(newFiles, f)
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found in skill"})
+		return
+	}
+
+	newMeta, _ := json.Marshal(db.SkillMeta{Files: newFiles})
+	result, err := h.kindsRepo.Update(c.Request.Context(), id, u.ID, db.KindUpdate{Meta: newMeta})
+	if err != nil {
+		logger.Default().Error("remove skill file from meta", "id", id, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update resource"})
+		return
+	}
+
+	c.JSON(http.StatusOK, kindRecordToResponse(result))
 }
 
 func kindRecordToResponse(r *db.KindRecord) resourceResponse {

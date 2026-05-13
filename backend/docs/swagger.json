@@ -9,7 +9,814 @@
     "host": "localhost:8080",
     "basePath": "/",
     "paths": {
+        "/api/auth/login": {
+            "post": {
+                "description": "Authenticate with username + password and receive an access token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Password login",
+                "parameters": [
+                    {
+                        "description": "Login credentials",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.passwordLoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.tokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "username and password required",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "invalid credentials",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "internal error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/oidc/callback": {
+            "get": {
+                "description": "Verifies state and id_token returned by the OIDC provider, issues an app JWT, and redirects to the frontend with the token in the URL fragment.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "OIDC browser callback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "State JWT issued during /api/auth/oidc/login",
+                        "name": "state",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Authorization code from the OIDC provider",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Found"
+                    },
+                    "400": {
+                        "description": "invalid state",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "id_token verification failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "internal error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "code exchange failed or missing id_token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/oidc/cli-callback": {
+            "get": {
+                "description": "Verifies the OIDC response for a CLI flow and stores the issued app token in Redis under the session ID.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "OIDC CLI callback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "State JWT issued during cli-login",
+                        "name": "state",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Authorization code from the OIDC provider",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Authentication successful",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid state or missing cli session",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "id_token verification failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "internal error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "code exchange failed or failed to store session",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/oidc/cli-login": {
+            "post": {
+                "description": "Creates a pending Redis session keyed by session_id and returns the browser auth URL the CLI should open.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Start CLI OIDC login",
+                "parameters": [
+                    {
+                        "description": "CLI session",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.cliLoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.cliLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "session_id required",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to build state or auth URL",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/oidc/cli-poll": {
+            "get": {
+                "description": "Returns the status of a CLI login session. When status is \"completed\" the response also contains the issued access token, and the session is deleted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Poll CLI OIDC session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "CLI session ID",
+                        "name": "session_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.cliPollResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "session_id required",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.errorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "session not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "redis error or invalid session data",
+                        "schema": {
+                            "$ref": "#/definitions/internal_oidc.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/oidc/login": {
+            "get": {
+                "description": "Redirects the browser to the OIDC provider's authorization endpoint. The optional ?redirect= is preserved through the flow.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "OIDC browser login",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Frontend redirect target after callback",
+                        "name": "redirect",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Found"
+                    },
+                    "500": {
+                        "description": "failed to build state or auth URL",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/register": {
+            "post": {
+                "description": "Create a new local user account and receive an access token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Register a user",
+                "parameters": [
+                    {
+                        "description": "Registration request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.registerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.tokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "username and password required",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "username already taken",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to issue token",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/sso/callback": {
+            "get": {
+                "description": "Exchanges the SSO code for a ticket, fetches user info, issues an app JWT, then redirects to the frontend with the token in the URL fragment.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "SSO callback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "SSO authorization code",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Found"
+                    },
+                    "400": {
+                        "description": "missing code",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "internal error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "502": {
+                        "description": "SSO check_code or check_user_ticket failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/sso/login": {
+            "get": {
+                "description": "Redirects the browser to the Didi SSO login page. An optional ?redirect= is forwarded as jumpto.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "SSO login",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Frontend redirect target after callback",
+                        "name": "redirect",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Found"
+                    }
+                }
+            }
+        },
+        "/api/resources": {
+            "get": {
+                "description": "List all resources owned by the authenticated user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "resources"
+                ],
+                "summary": "List resources",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_api.resourceResponse"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to list resources",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a skill (SKILL.md) or mcp (JSON config) resource owned by the authenticated user.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "resources"
+                ],
+                "summary": "Create a resource",
+                "parameters": [
+                    {
+                        "description": "Resource definition",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.createResourceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.resourceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid request body",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to store resource",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/resources/{id}": {
+            "put": {
+                "description": "Update a resource's content, meta, or active flag.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "resources"
+                ],
+                "summary": "Update a resource",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Resource ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.updateResourceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.resourceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid request body",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "resource not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to update resource",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a resource owned by the authenticated user. OFS content is not removed.",
+                "tags": [
+                    "resources"
+                ],
+                "summary": "Delete a resource",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Resource ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "invalid id",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "resource not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/resources/{id}/files/{filepath}": {
+            "put": {
+                "description": "Upload (or overwrite) a single file inside a skill resource. Body is the raw file content (max 1 MiB). Skills are capped at 20 files.",
+                "consumes": [
+                    "application/octet-stream"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "resources"
+                ],
+                "summary": "Upload or overwrite a skill file",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Resource ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Relative file path inside the skill",
+                        "name": "filepath",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Raw file bytes",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.resourceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid id or file path",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "resource not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "file exceeds size limit",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "skill file count exceeds limit",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to store file",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove a file from a skill's manifest. SKILL.md cannot be removed; OFS content is not deleted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "resources"
+                ],
+                "summary": "Remove a file from a skill",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Resource ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Relative file path inside the skill",
+                        "name": "filepath",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.resourceResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid id, invalid path, or SKILL.md cannot be removed",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "resource or file not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "failed to update resource",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "resource storage not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.errorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/runtime-config": {
+            "get": {
+                "description": "Returns which login modes (password, OIDC, SSO) are available to the frontend.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "meta"
+                ],
+                "summary": "Frontend runtime config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.runtimeConfigResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/tasks": {
+            "get": {
+                "description": "Returns task summaries ordered by most recently updated.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tasks"
+                ],
+                "summary": "List tasks for the authenticated user",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_api.taskListItem"
+                            }
+                        }
+                    }
+                }
+            },
             "post": {
                 "description": "Create a new task with an optional username and environment variables.",
                 "consumes": [
@@ -150,11 +957,11 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Raw session entries (see @anthropic-ai/claude-agent-sdk SDKMessage)",
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_your-org_platform-backend_internal_storage.ConversationEntry"
+                                "type": "object"
                             }
                         }
                     },
@@ -372,25 +1179,26 @@
         }
     },
     "definitions": {
-        "github_com_your-org_platform-backend_internal_storage.ConversationEntry": {
+        "internal_api.createResourceRequest": {
             "type": "object",
+            "required": [
+                "kind",
+                "name"
+            ],
             "properties": {
-                "isMeta": {
-                    "type": "boolean"
-                },
-                "message": {
-                    "type": "object"
-                },
-                "parentUuid": {
+                "content": {
                     "type": "string"
                 },
-                "timestamp": {
+                "kind": {
                     "type": "string"
                 },
-                "type": {
-                    "type": "string"
+                "meta": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
-                "uuid": {
+                "name": {
                     "type": "string"
                 }
             }
@@ -416,6 +1224,14 @@
             "type": "object",
             "properties": {
                 "id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.errorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
                     "type": "string"
                 }
             }
@@ -451,6 +1267,71 @@
                 }
             }
         },
+        "internal_api.passwordLoginRequest": {
+            "type": "object",
+            "required": [
+                "password",
+                "username"
+            ],
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.registerRequest": {
+            "type": "object",
+            "required": [
+                "password",
+                "username"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.resourceResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "meta": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "ofs_path": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_api.respondToPermissionRequest": {
             "type": "object",
             "required": [
@@ -475,6 +1356,26 @@
                 }
             }
         },
+        "internal_api.runtimeConfigResponse": {
+            "type": "object",
+            "properties": {
+                "allowRegister": {
+                    "type": "boolean"
+                },
+                "loginMode": {
+                    "type": "string"
+                },
+                "oidcLoginText": {
+                    "type": "string"
+                },
+                "passwordLogin": {
+                    "type": "boolean"
+                },
+                "ssoLoginText": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_api.sendMessageRequest": {
             "type": "object",
             "required": [
@@ -482,6 +1383,89 @@
             ],
             "properties": {
                 "prompt": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.taskListItem": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.tokenResponse": {
+            "type": "object",
+            "properties": {
+                "access_token": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.updateResourceRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "meta": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "internal_oidc.cliLoginRequest": {
+            "type": "object",
+            "required": [
+                "session_id"
+            ],
+            "properties": {
+                "session_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_oidc.cliLoginResponse": {
+            "type": "object",
+            "properties": {
+                "auth_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_oidc.cliPollResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_oidc.errorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
                     "type": "string"
                 }
             }

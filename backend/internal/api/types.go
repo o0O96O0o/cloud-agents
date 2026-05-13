@@ -70,3 +70,31 @@ type resourceResponse struct {
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }
+
+type passwordLoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+type registerRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	Email    string `json:"email,omitempty"`
+}
+
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+type runtimeConfigResponse struct {
+	LoginMode     string `json:"loginMode"`
+	PasswordLogin bool   `json:"passwordLogin"`
+	AllowRegister bool   `json:"allowRegister"`
+	OIDCLoginText string `json:"oidcLoginText,omitempty"`
+	SSOLoginText  string `json:"ssoLoginText,omitempty"`
+}
+
