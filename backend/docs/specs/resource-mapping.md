@@ -52,19 +52,20 @@ Can be: paused → destroyed → recreated
 ### Session
 ```
 User sends first message to POST /sessions on claude-agent-server
-  → session_id assigned (Claude Code UUID, emitted in SSE session.init)
+  → session_id assigned (agent UUID, emitted in SSE session.init)
   → backend writes session_id onto Task record (persisted permanently)
-  → OFS writes: {task_id}/sessions/{pid}.json  ← records session_id
-  → OFS writes: {task_id}/projects/-workspace-{username}-{task_id}/{uuid}.jsonl
+  → agent server writes via S3 API:
+      {username}/.claude/sessions/{pid}.json          ← process record (includes session_id)
+      {username}/history/{encoded_cwd}/{session_id}/part-*.ndjson  ← conversation parts
 
 Subsequent messages: POST /sessions/{session_id}/messages
 
 Sandbox destroyed:
-  → session process ends, session data lives in OFS under task_id
-  → task.session_id is NOT cleared — history is still readable via OFS
+  → session process ends, history parts remain in OFS under {username}/history/
+  → task.session_id is NOT cleared — history is still readable via OFS S3 API
 
 New sandbox provisioned for same task:
-  → agent server resumes from OFS history
+  → agent server resumes from OFS history (S3 parts)
   → session_id on the task record remains valid for OFS history lookup
   → backend updates task.session_id only if the agent server issues a new one
 ```
@@ -75,23 +76,23 @@ New sandbox provisioned for same task:
 
 ### Finding the session for a task
 
-The backend discovers the current session by reading OFS:
+The backend discovers the current session by reading OFS via S3:
 
 ```go
 // 1. Read the process record to get session_id
-meta, err := fileStore.GetSessionMeta(ctx, taskID)
-// meta.SessionID is the claude-agent-server session_id
+meta, err := fileStore.GetSessionMeta(ctx, t.Username, t.ID)
+// meta.SessionID is the agent session_id; meta.CWD == "/workspace/{username}/{task_id}"
 
-// 2. Or discover the JSONL history key
-keys, err := fileStore.ListHistory(ctx, taskID)
-// keys[0] = {task_id}/projects/-workspace-{username}-{task_id}/{uuid}.jsonl
+// 2. Or list history parts to get session prefixes
+keys, err := fileStore.ListHistory(ctx, t.Username, t.ID)
+// keys[0] = "{username}/history/-workspace-{username}-{task_id}/{session_id}/"
 ```
 
 `session_id` is **null until the first user message** arrives at the agent server. Once set, it is kept on the Task record permanently — no sandbox is required to read session history via OFS.
 
 ```go
-// When no sandbox is active, read history directly using the stored session_id:
-keys, err := fileStore.ListHistory(ctx, taskID)
+// When no sandbox is active, read history directly:
+keys, err := fileStore.ListHistory(ctx, t.Username, t.ID)
 entries, err := fileStore.GetHistory(ctx, keys[0])
 ```
 
@@ -99,10 +100,10 @@ entries, err := fileStore.GetHistory(ctx, keys[0])
 
 | Backend field | Source | Persistence |
 |---|---|---|
-| `task_id` | Backend UUID (`POST /api/tasks`) | Permanent; OFS namespace prefix; never changes |
+| `task_id` | Backend UUID (`POST /api/tasks`) | Permanent; injected into sandbox as `TASK_ID`; OFS workspace subpath; never changes |
 | `sandbox_id` | OpenSandbox container ID | Transient; null when no sandbox; changes on recreate |
 | `session_id` | SSE `session.init`.sessionId | Null until first message; **never cleared once set** |
-| OFS `{uuid}` | Claude Code JSONL file ID | Internal; discovered via `ListHistory` |
+| OFS history | Agent server writes via S3 API | Under `{username}/history/{encoded_cwd}/{session_id}/`; survives sandbox destruction |
 
 ---
 
@@ -112,7 +113,7 @@ entries, err := fileStore.GetHistory(ctx, keys[0])
 2. `sandbox_id` is transient — the backend must not use it as a durable session key.
 3. `session_id` is null at task creation time; the backend must handle this state.
 4. `session_id` is **never cleared** once written to the Task record. A task with no active sandbox but a set `session_id` can still serve history reads from OFS.
-5. OFS data under `{task_id}/` outlives any individual sandbox or session process.
+5. OFS data under `{username}/history/` and `{username}/.claude/` outlives any individual sandbox or session process.
 
 ---
 
@@ -133,8 +134,9 @@ entries, err := fileStore.GetHistory(ctx, keys[0])
 
 The OFS spec (`ofsspec.md`) describes the file layout. The mapping here determines how to reach it:
 
-- OFS root key for a task: `{task_id}/`
-- Session data is found under that prefix after the first user message
-- The backend reads session identity from `{task_id}/sessions/{pid}.json` (field: `sessionId`)
+- OFS S3 namespace for a user: `{username}/`
+- Session history parts: `{username}/history/-workspace-{username}-{task_id}/{session_id}/part-*.ndjson`
+- Session process record: `{username}/.claude/sessions/{pid}.json`
+- Agent workspace (FUSE only, not S3-accessible from backend): `/workspace/{username}/{task_id}/`
 
-The `task_id` is therefore the join key between the backend's task record, the sandbox environment, and the OFS-persisted session history.
+The `username` + `task_id` pair is the join key between the backend's task record, the sandbox FUSE workspace, and the OFS S3 session history.

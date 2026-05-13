@@ -25,9 +25,10 @@ type SessionMeta struct {
 }
 
 // OFSClient retrieves task history from OrangeFS via S3.
-// History files are stored under the user's .claude directory, mirroring the
-// local ~/.claude layout: {username}/.claude/projects/{encoded_cwd}/{session_id}.jsonl
-// The OFS mount is set up at sandbox creation time, before any agent session exists.
+// History parts: {username}/history/{encoded_cwd}/{session_id}/part-*.ndjson
+// Process records: {username}/.claude/sessions/{pid}.json
+// Neither path is under the FUSE workspace mount; both are written by the agent server
+// via the S3 API and read by the backend directly over the same endpoint.
 type OFSClient interface {
 	ListHistory(ctx context.Context, username, taskID string) ([]string, error)
 	// GetHistory returns raw NDJSON entries from the session part files. Each
