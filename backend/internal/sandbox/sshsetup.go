@@ -44,6 +44,10 @@ func (m *Manager) InjectSSHKey(ctx context.Context, sandboxID string, pemBytes [
 	if err := m.makeDirWithMode(ctx, sandboxID, "/root/.ssh", 700); err != nil {
 		return fmt.Errorf("create .ssh dir: %w", err)
 	}
+	// OpenSSH requires the PEM file to end with a newline; ensure it.
+	if len(pemBytes) > 0 && pemBytes[len(pemBytes)-1] != '\n' {
+		pemBytes = append(pemBytes, '\n')
+	}
 	if err := m.writeFileWithMode(ctx, sandboxID, "/root/.ssh/id_rsa", pemBytes, 600); err != nil {
 		return fmt.Errorf("write id_rsa: %w", err)
 	}
