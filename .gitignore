@@ -35,3 +35,4 @@ secrets.*
 # ── AI ───────────────────────────
 .firecrawl/
 .claude/
+.agents/
