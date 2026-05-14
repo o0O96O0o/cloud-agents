@@ -27,7 +27,7 @@ export function SettingsPage() {
     setError(null)
     setSuccess(null)
     try {
-      await updateUserSettings({ ssh_private_key: keyValue.trim() })
+      await updateUserSettings({ ssh_private_key: keyValue.trim() + '\n' })
       setHasKey(true)
       setKeyValue('')
       setSuccess('SSH key saved.')
