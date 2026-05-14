@@ -10,7 +10,6 @@ import (
 	"github.com/your-org/platform-backend/pkg/logger"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/google/uuid"
 	"github.com/your-org/platform-backend/internal/db"
 	"gorm.io/gorm"
 )
@@ -35,7 +34,7 @@ func (r *MySQLRepository) Create(ctx context.Context, username string, extraEnv 
 		return nil, fmt.Errorf("look up user %s: %w", username, err)
 	}
 
-	id := uuid.New().String()
+	id := newTaskID()
 
 	extraEnvJSON, err := json.Marshal(extraEnv)
 	if err != nil {

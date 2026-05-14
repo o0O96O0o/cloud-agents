@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/google/uuid"
 )
 
 func taskKey(id string) string { return "task:" + id }
@@ -25,7 +24,7 @@ func NewRedisRepository(rdb *redis.Client) *RedisRepository {
 }
 
 func (r *RedisRepository) Create(ctx context.Context, username string, extraEnv map[string]string, gitURL string) (*Task, error) {
-	id := uuid.New().String()
+	id := newTaskID()
 
 	extraEnvJSON, err := json.Marshal(extraEnv)
 	if err != nil {

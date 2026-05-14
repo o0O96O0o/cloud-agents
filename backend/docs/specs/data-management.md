@@ -7,7 +7,7 @@ Three principal entities form the backend data model. Their storage, lifetimes, 
 | Entity | Identity | Lifetime | Primary Store |
 |--------|----------|----------|---------------|
 | **User** | `user.id` (uint, auto-increment) | Permanent | MySQL `users` |
-| **Task** | `task_id` (UUID) | Permanent | MySQL `tasks` + Redis |
+| **Task** | `task_id` (12-char hex) | Permanent | MySQL `tasks` + Redis |
 | **Sandbox** | `sandbox_id` (OpenSandbox string) | Ephemeral | Redis `sandbox:{task_id}` |
 | **Resource** | `kind.id` (int, auto-increment) | Permanent | MySQL `kinds` + OFS S3 |
 
@@ -28,7 +28,7 @@ erDiagram
     }
 
     TASK {
-        string  id           PK  "UUID"
+        string  id           PK  "12-char hex short ID"
         uint    user_id      FK
         int     state            "0=New 1=Provisioning 2=Running 3=Error"
         string  title

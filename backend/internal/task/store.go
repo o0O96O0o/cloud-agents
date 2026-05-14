@@ -3,8 +3,6 @@ package task
 import (
 	"context"
 	"sync"
-
-	"github.com/google/uuid"
 )
 
 // State tracks sandbox liveness only. The full task state exposed to callers
@@ -315,7 +313,7 @@ func NewStore() *Store {
 
 func (s *Store) Create(username string, extraEnv map[string]string, gitURL string) *Task {
 	t := &Task{
-		ID:       uuid.New().String(),
+		ID:       newTaskID(),
 		Username: username,
 		state:    StateNew,
 		extraEnv: extraEnv,
