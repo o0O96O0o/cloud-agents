@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - *ALWAYS* actively ask questions if there is anything unclear.
 - *ALWAYS* update related documents if you made functional changes.
+- *ALWAYS* read the relevant spec documents under `backend/docs/specs/` before modifying backend code. The specs are the authoritative source for design decisions; do not infer intent from code alone.
 
 ## Planning & Design
 

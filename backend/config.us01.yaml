@@ -13,6 +13,7 @@ sandbox:
   platform:
     os: "linux"
     arch: "amd64"
+  timeout_seconds: 3600
 
 anthropic:
   # Required

@@ -162,3 +162,12 @@ func (c *apiLifecycleClient) GetSandbox(ctx context.Context, id string) (*Sandbo
 func (c *apiLifecycleClient) DeleteSandbox(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/sandboxes/"+url.PathEscape(id), nil, nil)
 }
+
+type renewExpirationRequest struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+func (c *apiLifecycleClient) RenewSandboxExpiration(ctx context.Context, id string, expiresAt time.Time) error {
+	return c.do(ctx, http.MethodPost, "/sandboxes/"+url.PathEscape(id)+"/renew-expiration",
+		renewExpirationRequest{ExpiresAt: expiresAt}, nil)
+}

@@ -25,6 +25,7 @@ type lifecycleClient interface {
 	CreateSandbox(ctx context.Context, req CreateSandboxRequest) (*SandboxInfo, error)
 	GetSandbox(ctx context.Context, id string) (*SandboxInfo, error)
 	DeleteSandbox(ctx context.Context, id string) error
+	RenewSandboxExpiration(ctx context.Context, id string, expiresAt time.Time) error
 }
 
 // healthChecker polls the claude-agent-server until it is ready to accept sessions.
@@ -43,42 +44,49 @@ const (
 )
 
 type Manager struct {
-	lc            lifecycleClient
-	serverURL     string
-	apiKey        string
-	baseEnv       map[string]string
-	sandboxImage  string
-	platform      *PlatformSpec
-	memoryLimit   string
-	cpuLimit      string
-	agentPort     int
-	healthChecker healthChecker
-	httpClient    *http.Client
+	lc             lifecycleClient
+	serverURL      string
+	apiKey         string
+	baseEnv        map[string]string
+	sandboxImage   string
+	platform       *PlatformSpec
+	memoryLimit    string
+	cpuLimit       string
+	timeoutSeconds int
+	agentPort      int
+	healthChecker  healthChecker
+	httpClient     *http.Client
 
 	// optional: set via WithResources to enable skill/MCP injection at provision time.
 	kindsRepo db.KindsRepository
 	ofsReader ofsReader
 }
 
-func NewManager(serverURL, apiKey string, baseEnv map[string]string, image string, platform *PlatformSpec, memoryLimit, cpuLimit string) *Manager {
+const defaultTimeoutSeconds = 3600
+
+func NewManager(serverURL, apiKey string, baseEnv map[string]string, image string, platform *PlatformSpec, memoryLimit, cpuLimit string, timeoutSeconds int) *Manager {
 	if memoryLimit == "" {
 		memoryLimit = defaultMemoryLimit
 	}
 	if cpuLimit == "" {
 		cpuLimit = defaultCPULimit
 	}
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultTimeoutSeconds
+	}
 	return &Manager{
-		lc:            newAPILifecycleClient(serverURL, apiKey),
-		serverURL:     serverURL,
-		apiKey:        apiKey,
-		baseEnv:       baseEnv,
-		sandboxImage:  image,
-		platform:      platform,
-		memoryLimit:   memoryLimit,
-		cpuLimit:      cpuLimit,
-		agentPort:     DefaultAgentPort,
-		healthChecker: newHTTPHealthChecker(&http.Client{Timeout: 5 * time.Second}),
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
+		lc:             newAPILifecycleClient(serverURL, apiKey),
+		serverURL:      serverURL,
+		apiKey:         apiKey,
+		baseEnv:        baseEnv,
+		sandboxImage:   image,
+		platform:       platform,
+		memoryLimit:    memoryLimit,
+		cpuLimit:       cpuLimit,
+		timeoutSeconds: timeoutSeconds,
+		agentPort:      DefaultAgentPort,
+		healthChecker:  newHTTPHealthChecker(&http.Client{Timeout: 5 * time.Second}),
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -104,7 +112,7 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 	env["USERNAME"] = t.Username
 	env["TASK_ID"] = t.ID
 
-	timeout := 3600
+	timeout := m.timeoutSeconds
 	info, err := m.lc.CreateSandbox(ctx, CreateSandboxRequest{
 		Image:          &ImageSpec{URI: m.sandboxImage},
 		Platform:       m.platform,
@@ -173,6 +181,12 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 
 func (m *Manager) DeleteSandbox(ctx context.Context, sandboxID string) error {
 	return m.lc.DeleteSandbox(ctx, sandboxID)
+}
+
+// RenewExpiration extends the sandbox TTL by m.timeoutSeconds from now.
+func (m *Manager) RenewExpiration(ctx context.Context, sandboxID string) error {
+	expiresAt := time.Now().Add(time.Duration(m.timeoutSeconds) * time.Second)
+	return m.lc.RenewSandboxExpiration(ctx, sandboxID, expiresAt)
 }
 
 // injectResources fetches all active resources for userID and writes them into the

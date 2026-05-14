@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Read Before Coding
+
+Before touching any backend code, read the relevant spec documents in `backend/docs/specs/`. They are the authoritative source for design decisions and implementation contracts.
+
+| Document | When to read |
+|---|---|
+| [`docs/specs/data-management.md`](docs/specs/data-management.md) | Any change to User, Task, or Sandbox entities |
+| [`docs/specs/storage.md`](docs/specs/storage.md) | Any change to MySQL, Redis, or OFS storage |
+| [`docs/specs/resource-mapping.md`](docs/specs/resource-mapping.md) | Any change to task/sandbox/session lifecycle |
+| [`docs/specs/resources.md`](docs/specs/resources.md) | Any change to skill or MCP resource handling |
+| [`docs/specs/ofsspec.md`](docs/specs/ofsspec.md) | Any change to OFS file access or session history |
+| [`docs/specs/workspace.md`](docs/specs/workspace.md) | Any change to the workspace/filesystem proxy |
+| [`docs/specs/configuration.md`](docs/specs/configuration.md) | Any change to config fields or YAML structure |
+
 ## Commands
 
 ```bash

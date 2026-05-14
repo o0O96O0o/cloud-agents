@@ -134,7 +134,7 @@ func main() {
 		logger.Default().Info("SSO enabled", "base_url", cfg.SSO.BaseURL)
 	}
 
-	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform, cfg.Sandbox.MemoryLimit, cfg.Sandbox.CPULimit)
+	mgr := sandbox.NewManager(cfg.Sandbox.ServerURL, cfg.Sandbox.APIKey, baseEnv, cfg.Sandbox.Image, platform, cfg.Sandbox.MemoryLimit, cfg.Sandbox.CPULimit, cfg.Sandbox.TimeoutSeconds)
 
 	kindsRepo := db.NewKindsRepository(gormDB)
 	if ofsClient != nil {

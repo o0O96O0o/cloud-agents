@@ -57,6 +57,10 @@ func (m *mockLC) DeleteSandbox(_ context.Context, id string) error {
 	return m.deleteErr
 }
 
+func (m *mockLC) RenewSandboxExpiration(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+
 // noopHealthChecker always succeeds immediately, letting existing tests bypass the
 // health check without making real HTTP requests.
 type noopHealthChecker struct{}

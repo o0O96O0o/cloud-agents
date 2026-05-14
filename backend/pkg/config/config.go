@@ -31,12 +31,13 @@ type ServerConfig struct {
 }
 
 type SandboxConfig struct {
-	ServerURL   string          `yaml:"server_url"`
-	APIKey      string          `yaml:"api_key"`
-	Image       string          `yaml:"image"`
-	Platform    *PlatformConfig `yaml:"platform"`
-	MemoryLimit string          `yaml:"memory_limit"` // e.g. "4Gi"; defaults to "4Gi" if empty
-	CPULimit    string          `yaml:"cpu_limit"`    // e.g. "2000m"; defaults to "2000m" if empty
+	ServerURL      string          `yaml:"server_url"`
+	APIKey         string          `yaml:"api_key"`
+	Image          string          `yaml:"image"`
+	Platform       *PlatformConfig `yaml:"platform"`
+	MemoryLimit    string          `yaml:"memory_limit"`    // e.g. "4Gi"; defaults to "4Gi" if empty
+	CPULimit       string          `yaml:"cpu_limit"`       // e.g. "2000m"; defaults to "2000m" if empty
+	TimeoutSeconds int             `yaml:"timeout_seconds"` // sandbox TTL in seconds; defaults to 3600
 }
 
 type PlatformConfig struct {
@@ -99,8 +100,9 @@ func Load(path string) (*Config, error) {
 			CORSOrigin: "http://localhost:5173",
 		},
 		Sandbox: SandboxConfig{
-			ServerURL: "http://localhost:8080",
-			Image:     "opensandbox/code-interpreter:local",
+			ServerURL:      "http://localhost:8080",
+			Image:          "opensandbox/code-interpreter:local",
+			TimeoutSeconds: 3600,
 		},
 	}
 

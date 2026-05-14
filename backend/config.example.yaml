@@ -11,6 +11,9 @@ sandbox:
   # Both default to "4Gi" / "2000m" if omitted.
   memory_limit: "4Gi"
   cpu_limit: "2000m"
+  # Sandbox TTL in seconds. Each user interaction renews the expiration by this duration.
+  # Defaults to 3600 (1 hour) if omitted.
+  timeout_seconds: 3600
   # Optional — both os and arch must be set to take effect
   # platform:
   #   os: linux
