@@ -50,13 +50,14 @@ swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 | Dep                       | nil means                                |
 | ------------------------- | ---------------------------------------- |
 | `DB`                      | Auth disabled (dev mode)                 |
+| `UserRepo`                | User settings update returns 503         |
 | `OIDCService`             | OIDC routes not registered               |
 | `SSOService`              | SSO routes not registered                |
 | `Redis`                   | CLI OIDC flow unavailable                |
 | `KindsRepo` + `OFSWriter` | `/api/resources` routes return 503       |
 | `WorkspaceReader`         | `/api/tasks/:id/workspace/*` returns 409 |
 
-`Handler` has the same optional wiring via `withResources`, `withWorkspace`, `withExecd` methods called inside `NewRouter`.
+`NewRouter` constructs four domain handlers — `TaskHandler`, `ResourceHandler`, `WorkspaceHandler`, `UserHandler` — and wires them into the router. Each handler carries only the dependencies its methods use.
 
 ### Task state machine (`internal/task/store.go`)
 
@@ -93,11 +94,23 @@ Two resource kinds: `skill` and `mcp`.
 
 ### Execd proxy (`/api/tasks/:id/execd/*path`)
 
-Proxies any method to port `44772` inside the task's sandbox (`{serverURL}/sandboxes/:id/proxy/44772{subpath}`). Used for filesystem ops (search, download, directory listing). Requires `serverURL` + `sandboxAPIKey` via `withExecd`.
+Proxies any method to port `44772` inside the task's sandbox (`{serverURL}/sandboxes/:id/proxy/44772{subpath}`). Used for filesystem ops (search, download, directory listing). `serverURL` and `sandboxAPIKey` are injected as plain strings into `WorkspaceHandler` at construction time.
+
+### Handler layout (`internal/api/`)
+
+| File | Handler struct | Domain |
+|---|---|---|
+| `handlers_tasks.go` | `TaskHandler` | tasks + messaging |
+| `handlers_resources.go` | `ResourceHandler` | skills + MCP resources |
+| `handlers_workspace.go` | `WorkspaceHandler` | workspace files + execd proxy |
+| `handlers_user.go` | `UserHandler` | user settings (SSH key) |
+| `handlers_auth.go` | — (standalone funcs) | password login + register |
+| `interfaces.go` | — | all interface definitions |
+| `middleware.go` | — | CORS middleware |
 
 ### Adding a new endpoint
 
-1. Add handler method to `Handler` in `internal/api/handlers.go` with Swagger annotations (`@Summary`, `@Param`, `@Success`, `@Router`, etc.)
+1. Add a handler method to the appropriate domain handler in `internal/api/handlers_<domain>.go` with Swagger annotations (`@Summary`, `@Param`, `@Success`, `@Router`, etc.)
 2. Register the route in `internal/api/router.go` (protected group or public, as appropriate)
 3. Regenerate docs: `swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal`
 
@@ -110,7 +123,7 @@ Proxies any method to port `44772` inside the task's sandbox (`{serverURL}/sandb
 ## Code conventions
 
 - Prefer concrete types over `map[string]any`; define a struct if one doesn't exist.
-- Always update Swagger annotations in `internal/api/handlers.go` when adding or changing endpoints, then regenerate the docs.
+- Always update Swagger annotations in the relevant `internal/api/handlers_<domain>.go` file when adding or changing endpoints, then regenerate the docs.
 - `context.Background()` is intentional for provisioning calls — it must survive client disconnects.
 
 

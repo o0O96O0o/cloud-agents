@@ -90,8 +90,8 @@ func (m *mockProxy) RespondToQuestion(_ context.Context, _ *task.Task, _ map[str
 
 // ---- helpers ----
 
-func newHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy) *Handler {
-	return NewHandler(store, mgr, proxy, nil)
+func newHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy) *TaskHandler {
+	return NewTaskHandler(store, mgr, proxy, nil)
 }
 
 func taskWithSandbox(sandboxID, sessionID string) *task.Task {

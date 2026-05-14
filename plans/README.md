@@ -13,6 +13,7 @@ New product platform built on top of OpenSandbox. First feature: chat with a Cla
 ## Archived (implemented)
 
 See [archived/](./archived/) for completed plans:
+- `handler-decomposition.md` — Monolithic Handler split into TaskHandler, ResourceHandler, WorkspaceHandler, UserHandler + UserRepository interface
 - `gin-migration.md` — net/http → Gin migration
 - `backend.md` — Go backend reference
 - `redis-task-store.md` — Redis task store (superseded by MySQL+Redis split)

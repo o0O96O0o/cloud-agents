@@ -327,6 +327,7 @@ func newSmokeHarness(t *testing.T) *smokeHarness {
 		Manager:    mgr,
 		CORSOrigin: "*",
 		DB:         gormDB,
+		UserRepo:   db.NewUserRepository(gormDB),
 		Cfg:        cfg,
 		KindsRepo:  kindsRepo,
 		OFSWriter:  ofs,

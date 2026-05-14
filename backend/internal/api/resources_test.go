@@ -114,13 +114,18 @@ func (m *mockOFSReader) GetObjectBytes(_ context.Context, key string) ([]byte, e
 
 // ---- helpers ----
 
-// resourceHandler builds a Handler with resource deps wired and returns it.
-func resourceHandler(kr *mockKindsRepo, w *mockOFSWriter) *Handler {
-	h := NewHandler(&mockStore{}, &mockManager{}, &mockProxy{}, nil)
+// resourceHandler builds a ResourceHandler with the given deps and returns it.
+// Nil pointers are converted to nil interfaces to preserve nil-guard semantics.
+func resourceHandler(kr *mockKindsRepo, w *mockOFSWriter) *ResourceHandler {
+	var repo db.KindsRepository
 	if kr != nil {
-		h.withResources(kr, w, &mockOFSReader{})
+		repo = kr
 	}
-	return h
+	var writer ResourceWriter
+	if w != nil {
+		writer = w
+	}
+	return NewResourceHandler(repo, writer, &mockOFSReader{})
 }
 
 // authedContext creates a Gin context with a test user attached and the given request.

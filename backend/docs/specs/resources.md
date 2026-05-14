@@ -385,7 +385,7 @@ type ResourceWriter interface {
 }
 ```
 
-Implemented by `*storage.Client`. Injected into `Handler` via `withResources`.
+Implemented by `*storage.Client`. Injected into `ResourceHandler` via `NewResourceHandler`.
 
 ### `ofsReader` (sandbox package)
 

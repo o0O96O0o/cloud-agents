@@ -22,13 +22,14 @@ type RouterDeps struct {
 	Store           TaskStore
 	Manager         SandboxManager
 	FileStore       FileStore
-	KindsRepo       db.KindsRepository // nil → resource API unavailable
-	OFSWriter       ResourceWriter     // nil → resource content upload unavailable
-	OFSReader       ResourceReader     // nil → resource content read unavailable
-	WorkspaceReader WorkspaceReader    // nil → OFS workspace browsing unavailable
+	KindsRepo       db.KindsRepository // nil → resource API returns 503
+	OFSWriter       ResourceWriter     // nil → resource content upload returns 503
+	OFSReader       ResourceReader     // nil → resource content read returns 503
+	WorkspaceReader WorkspaceReader    // nil → OFS workspace browsing returns 409
+	UserRepo        db.UserRepository  // nil → user settings update returns 503
+	DB              *gorm.DB           // kept for auth.BearerAuth and OIDC/SSO middleware
 	CORSOrigin      string
-	DB              *gorm.DB      // nil → auth disabled (dev mode)
-	Redis           *redis.Client // nil → CLI OIDC flow unavailable
+	Redis           *redis.Client    // nil → CLI OIDC flow unavailable
 	Cfg             *config.Config
 	OIDCService     *oidcpkg.Service // nil → OIDC routes not registered
 	SSOService      *ssopkg.Service  // nil → SSO routes not registered
@@ -36,23 +37,22 @@ type RouterDeps struct {
 
 // NewRouter builds the HTTP handler for the tasks API.
 func NewRouter(deps RouterDeps) http.Handler {
-	h := NewHandler(deps.Store, deps.Manager, sandbox.NewProxy(), deps.FileStore)
-	if deps.KindsRepo != nil {
-		h.withResources(deps.KindsRepo, deps.OFSWriter, deps.OFSReader)
-	}
+	taskH := NewTaskHandler(deps.Store, deps.Manager, sandbox.NewProxy(), deps.FileStore)
+
+	resourceH := NewResourceHandler(deps.KindsRepo, deps.OFSWriter, deps.OFSReader)
+
+	var serverURL, sandboxAPIKey string
 	if deps.Cfg != nil {
-		h.withExecd(deps.Cfg.Sandbox.ServerURL, deps.Cfg.Sandbox.APIKey)
+		serverURL = deps.Cfg.Sandbox.ServerURL
+		sandboxAPIKey = deps.Cfg.Sandbox.APIKey
 	}
-	if deps.WorkspaceReader != nil {
-		h.withWorkspace(deps.WorkspaceReader)
+	workspaceH := NewWorkspaceHandler(deps.Store, deps.WorkspaceReader, serverURL, sandboxAPIKey)
+
+	var sshKeySecret string
+	if deps.Cfg != nil {
+		sshKeySecret = deps.Cfg.Security.SSHKeySecret
 	}
-	if deps.DB != nil {
-		sshSecret := ""
-		if deps.Cfg != nil {
-			sshSecret = deps.Cfg.Security.SSHKeySecret
-		}
-		h.withUserSettings(deps.DB, sshSecret)
-	}
+	userH := NewUserHandler(deps.UserRepo, sshKeySecret)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -74,8 +74,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 		r.GET("/api/auth/sso/login", ssoH.Login)
 		r.GET("/api/auth/sso/callback", ssoH.Callback)
 	}
-	r.POST("/api/auth/login", PasswordLoginHandler(deps.DB, deps.Cfg.Auth))
-	r.POST("/api/auth/register", RegisterHandler(deps.DB, deps.Cfg.Auth))
+	r.POST("/api/auth/login", PasswordLoginHandler(deps.UserRepo, deps.Cfg.Auth))
+	r.POST("/api/auth/register", RegisterHandler(deps.UserRepo, deps.Cfg.Auth))
 
 	r.GET("/api/runtime-config", runtimeConfigHandler(deps.Cfg, deps.OIDCService, deps.SSOService))
 
@@ -83,33 +83,33 @@ func NewRouter(deps RouterDeps) http.Handler {
 	protected := r.Group("/api")
 	protected.Use(auth.BearerAuth(deps.Cfg.Auth.SecretKey, deps.DB))
 	{
-		protected.GET("/tasks", h.ListTasks)
-		protected.POST("/tasks", h.CreateTask)
-		protected.POST("/tasks/:id/messages", h.SendMessage)
-		protected.GET("/tasks/:id", h.GetTask)
-		protected.GET("/tasks/:id/history", h.GetTaskHistory)
-		protected.DELETE("/tasks/:id", h.DeleteTask)
-		protected.POST("/tasks/:id/permissions", h.RespondToPermission)
-		protected.POST("/tasks/:id/questions", h.RespondToQuestion)
+		protected.GET("/tasks", taskH.ListTasks)
+		protected.POST("/tasks", taskH.CreateTask)
+		protected.POST("/tasks/:id/messages", taskH.SendMessage)
+		protected.GET("/tasks/:id", taskH.GetTask)
+		protected.GET("/tasks/:id/history", taskH.GetTaskHistory)
+		protected.DELETE("/tasks/:id", taskH.DeleteTask)
+		protected.POST("/tasks/:id/permissions", taskH.RespondToPermission)
+		protected.POST("/tasks/:id/questions", taskH.RespondToQuestion)
 
-		protected.POST("/resources", h.CreateResource)
-		protected.POST("/resources/zip", h.CreateSkillFromZip)
-		protected.GET("/resources", h.ListResources)
-		protected.GET("/resources/:id/content", h.GetSkillContent)
-		protected.PUT("/resources/:id", h.UpdateResource)
-		protected.DELETE("/resources/:id", h.DeleteResource)
-		protected.PUT("/resources/:id/files/*filepath", h.UpsertSkillFile)
-		protected.DELETE("/resources/:id/files/*filepath", h.DeleteSkillFile)
+		protected.POST("/resources", resourceH.CreateResource)
+		protected.POST("/resources/zip", resourceH.CreateSkillFromZip)
+		protected.GET("/resources", resourceH.ListResources)
+		protected.GET("/resources/:id/content", resourceH.GetSkillContent)
+		protected.PUT("/resources/:id", resourceH.UpdateResource)
+		protected.DELETE("/resources/:id", resourceH.DeleteResource)
+		protected.PUT("/resources/:id/files/*filepath", resourceH.UpsertSkillFile)
+		protected.DELETE("/resources/:id/files/*filepath", resourceH.DeleteSkillFile)
 
-		protected.GET("/tasks/:id/workspace/files", h.WorkspaceFiles)
-		protected.GET("/tasks/:id/workspace/file", h.WorkspaceFile)
-		protected.Any("/tasks/:id/execd/*path", h.ExecdProxy)
+		protected.GET("/tasks/:id/workspace/files", workspaceH.WorkspaceFiles)
+		protected.GET("/tasks/:id/workspace/file", workspaceH.WorkspaceFile)
+		protected.Any("/tasks/:id/execd/*path", workspaceH.ExecdProxy)
 
-		protected.GET("/user/settings", h.GetUserSettings)
-		protected.PUT("/user/settings", h.UpdateUserSettings)
+		protected.GET("/user/settings", userH.GetUserSettings)
+		protected.PUT("/user/settings", userH.UpdateUserSettings)
 	}
 
-	r.GET("/health", h.Health)
+	r.GET("/health", taskH.Health)
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	return r
@@ -154,18 +154,5 @@ func runtimeConfigHandler(cfg *config.Config, oidcSvc *oidcpkg.Service, ssoSvc *
 			OIDCLoginText: cfg.OIDC.ClientID,
 			SSOLoginText:  cfg.SSO.AppID,
 		})
-	}
-}
-
-func corsMiddleware(origin string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", origin)
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
 	}
 }

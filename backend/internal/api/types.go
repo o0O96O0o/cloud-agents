@@ -1,9 +1,8 @@
 package api
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
+
+// Shared request/response types used across multiple handler domains.
 
 type createTaskRequest struct {
 	Username string            `json:"username" binding:"required"`
@@ -32,20 +31,8 @@ type getTaskResponse struct {
 	ErrorMsg  string `json:"error_msg,omitempty"`
 }
 
-// FileInfo is a single file or directory entry in a workspace listing.
-// Field names and JSON keys match the execd files/search response shape
-// so the frontend requires no parsing changes.
-type FileInfo struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	IsDir   bool   `json:"isDir"`
-	Size    int64  `json:"size"`
-	Mode    string `json:"mode"`
-	ModTime string `json:"modTime"`
-}
-
 type respondToPermissionRequest struct {
-	Decision string `json:"decision" binding:"required"` // "allow" or "deny"
+	Decision string `json:"decision" binding:"required"`
 }
 
 type respondToQuestionRequest struct {
@@ -66,41 +53,6 @@ type taskListItem struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-type createResourceRequest struct {
-	Kind    string          `json:"kind" binding:"required"`
-	Name    string          `json:"name" binding:"required"`
-	Content string          `json:"content"`
-	Meta    json.RawMessage `json:"meta,omitempty"`
-}
-
-type updateResourceRequest struct {
-	Content  string          `json:"content,omitempty"`
-	Meta     json.RawMessage `json:"meta,omitempty"`
-	IsActive *bool           `json:"is_active,omitempty"`
-}
-
-type resourceResponse struct {
-	ID        int             `json:"id"`
-	Kind      string          `json:"kind"`
-	Name      string          `json:"name"`
-	OFSPath   string          `json:"ofs_path"`
-	Meta      json.RawMessage `json:"meta"`
-	IsActive  bool            `json:"is_active"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-}
-
-type passwordLoginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-}
-
-type registerRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
-	Email    string `json:"email,omitempty"`
-}
-
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 }
@@ -116,12 +68,3 @@ type runtimeConfigResponse struct {
 	OIDCLoginText string `json:"oidcLoginText,omitempty"`
 	SSOLoginText  string `json:"ssoLoginText,omitempty"`
 }
-
-type userSettingsResponse struct {
-	HasSSHKey bool `json:"has_ssh_key"`
-}
-
-type updateUserSettingsRequest struct {
-	SSHPrivateKey *string `json:"ssh_private_key"`
-}
-

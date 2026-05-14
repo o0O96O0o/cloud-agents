@@ -141,7 +141,7 @@ The `ssh_private_key` field is **required**. Omitting it returns `400` to preven
 | `400` | `ssh_private_key is required` | Field absent from body |
 | `400` | `invalid SSH private key: <reason>` | PEM parse failure / passphrase-protected |
 | `500` | `SSH key encryption not configured` | `ssh_key_secret` is blank in config |
-| `503` | `user settings not configured` | MySQL not wired (`DB == nil`) |
+| `503` | `user settings not configured` | User repo not wired (`UserRepo == nil`) |
 
 ---
 

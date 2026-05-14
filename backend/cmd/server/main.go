@@ -161,6 +161,7 @@ func main() {
 		OFSWriter:       ofsClient,
 		OFSReader:       ofsClient,
 		WorkspaceReader: ofsClient,
+		UserRepo:        db.NewUserRepository(gormDB),
 		CORSOrigin:      cfg.Server.CORSOrigin,
 		DB:              gormDB,
 		Redis:           rdb,

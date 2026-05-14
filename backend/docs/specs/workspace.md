@@ -67,13 +67,13 @@ Given `cwd = /workspace/{username}/{task_id}` and a requested path `p`:
 3. Calls `storage.Client.GetWorkspaceFile(ctx, username, taskID, path)`.
 4. Streams raw bytes as `application/octet-stream`.
 
-**Handler fields** added to `api.Handler`:
+**Handler**: `WorkspaceHandler` in `internal/api/handlers_workspace.go`.
 
 | Field | Type | Purpose |
 |---|---|---|
 | `workspaceReader` | `WorkspaceReader` | OFS S3 client for workspace browsing |
 
-Populated in `NewRouter` via `h.withWorkspace(deps.WorkspaceReader)` when `deps.WorkspaceReader != nil`.
+`workspaceReader` is injected via `NewWorkspaceHandler`. When nil, workspace endpoints return 409.
 
 ---
 
