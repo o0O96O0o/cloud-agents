@@ -29,6 +29,7 @@ type User struct {
 	IsActive            bool       `gorm:"default:true"`
 	AuthSource          AuthSource `gorm:"size:20;not null;default:'unknown'"`
 	SSHPrivateKeyEnc    string     `gorm:"column:ssh_private_key_enc;type:text"`
+	AnthropicAPIKeyEnc  string     `gorm:"column:anthropic_api_key_enc;type:text"`
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }

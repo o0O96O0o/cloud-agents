@@ -51,7 +51,6 @@ type PlatformConfig struct {
 }
 
 type AnthropicConfig struct {
-	APIKey                   string `yaml:"api_key"`
 	BaseURL                  string `yaml:"base_url"`
 	Model                    string `yaml:"model"`
 	DisableExperimentalBetas string `yaml:"disable_experimental_betas"`

@@ -20,8 +20,6 @@ sandbox:
   #   arch: amd64
 
 anthropic:
-  # Required — injected into sandbox as ANTHROPIC_API_KEY
-  api_key: your-anthropic-api-key
   # Optional — leave empty to use api.anthropic.com
   base_url: ""
   # Optional — injected as ANTHROPIC_MODEL; leave empty for server default

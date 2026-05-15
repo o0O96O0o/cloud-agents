@@ -261,6 +261,7 @@ export async function readFile(taskId: string, filePath: string): Promise<string
 
 export interface UserSettings {
   has_ssh_key: boolean
+  has_anthropic_key: boolean
 }
 
 export async function getUserSettings(): Promise<UserSettings> {
@@ -271,7 +272,7 @@ export async function getUserSettings(): Promise<UserSettings> {
   return res.json() as Promise<UserSettings>
 }
 
-export async function updateUserSettings(body: { ssh_private_key?: string }): Promise<void> {
+export async function updateUserSettings(body: { ssh_private_key?: string; anthropic_api_key?: string }): Promise<void> {
   const res = await fetch(`${BASE}/api/user/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },

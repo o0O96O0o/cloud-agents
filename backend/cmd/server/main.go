@@ -37,8 +37,7 @@ func main() {
 	logger.Init(logger.Config{Level: cfg.Log.Level, Format: cfg.Log.Format})
 
 	baseEnv := map[string]string{
-		"ANTHROPIC_API_KEY": cfg.Anthropic.APIKey,
-		"PORT":              "3000",
+		"PORT": "3000",
 	}
 	for k, v := range map[string]string{
 		"ANTHROPIC_BASE_URL":                     cfg.Anthropic.BaseURL,

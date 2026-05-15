@@ -124,6 +124,12 @@ func (m *Manager) ProvisionForTask(ctx context.Context, t *task.Task) error {
 	env["USERNAME"] = t.Username
 	env["TASK_ID"] = t.ID
 
+	if m.gormDB != nil && m.sshKeySecret != "" && t.Username != "" {
+		if userKey := m.lookupUserAnthropicKey(ctx, t.Username); userKey != "" {
+			env["ANTHROPIC_API_KEY"] = userKey
+		}
+	}
+
 	timeout := m.timeoutSeconds
 	info, err := m.lc.CreateSandbox(ctx, CreateSandboxRequest{
 		Image:          &ImageSpec{URI: m.sandboxImage},

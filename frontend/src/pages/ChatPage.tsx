@@ -7,9 +7,12 @@ import { HistorySidepanel } from '@/components/HistorySidepanel'
 import { NewTaskDialog } from '@/components/NewTaskDialog'
 import { StatusBadge } from '@/components/StatusBadge'
 import { WorkspacePanel } from '@/components/WorkspacePanel'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChat } from '@/hooks/useChat'
-import { createTask, deleteTask, getHistory, getTask, listTasks } from '@/api/client'
+import { createTask, deleteTask, getHistory, getTask, getUserSettings, listTasks, updateUserSettings } from '@/api/client'
 import type { TaskSummary } from '@/api/client'
 import { getAuthUsername } from '@/lib/auth'
 import { buildMessages } from '@/lib/chainBuilder'
@@ -37,6 +40,13 @@ export function ChatPage() {
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  const [hasAnthropicKey, setHasAnthropicKey] = useState<boolean | null>(null)
+  const [keyDialogOpen, setKeyDialogOpen] = useState(false)
+  const [pendingMsg, setPendingMsg] = useState('')
+  const [anthropicKeyInput, setAnthropicKeyInput] = useState('')
+  const [savingKey, setSavingKey] = useState(false)
+  const [keyError, setKeyError] = useState<string | null>(null)
+
   const refreshTasks = useCallback(() => {
     listTasks().then(setTasks).catch(() => {})
   }, [])
@@ -44,6 +54,41 @@ export function ChatPage() {
   useEffect(() => {
     refreshTasks()
   }, [refreshTasks])
+
+  useEffect(() => {
+    getUserSettings()
+      .then(s => setHasAnthropicKey(s.has_anthropic_key))
+      .catch(() => setHasAnthropicKey(true)) // on error, don't block sending
+  }, [])
+
+  const handleSaveKey = useCallback(async () => {
+    if (!anthropicKeyInput.trim()) return
+    setSavingKey(true)
+    setKeyError(null)
+    try {
+      await updateUserSettings({ anthropic_api_key: anthropicKeyInput.trim() })
+      setHasAnthropicKey(true)
+      setKeyDialogOpen(false)
+      setAnthropicKeyInput('')
+      if (pendingMsg) {
+        sendMessage(pendingMsg)
+        setPendingMsg('')
+      }
+    } catch (e) {
+      setKeyError(e instanceof Error ? e.message : 'Failed to save key')
+    } finally {
+      setSavingKey(false)
+    }
+  }, [anthropicKeyInput, pendingMsg, sendMessage])
+
+  const handleSend = useCallback((msg: string) => {
+    if (hasAnthropicKey === false) {
+      setPendingMsg(msg)
+      setKeyDialogOpen(true)
+      return
+    }
+    sendMessage(msg)
+  }, [hasAnthropicKey, sendMessage])
 
   useEffect(() => {
     if (taskId) refreshTasks()
@@ -108,6 +153,38 @@ export function ChatPage() {
         onClose={() => setDialogOpen(false)}
         onCreate={handleDialogCreate}
       />
+
+      <Dialog open={keyDialogOpen} onOpenChange={open => { setKeyDialogOpen(open); if (!open) setPendingMsg('') }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Anthropic API Key Required</DialogTitle>
+            <DialogDescription>
+              Enter your Anthropic API key to start using Lucas. It will be encrypted and stored securely on your account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Input
+              type="password"
+              placeholder="sk-ant-..."
+              value={anthropicKeyInput}
+              onChange={e => setAnthropicKeyInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSaveKey()}
+              className="font-mono text-sm"
+              autoFocus
+            />
+            {keyError && <p className="text-xs text-red-600">{keyError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              size="sm"
+              onClick={handleSaveKey}
+              disabled={savingKey || !anthropicKeyInput.trim()}
+            >
+              {savingKey ? 'Saving…' : 'Save and continue'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {sidebarOpen && (
         <>
           <div style={{ width: sidebarWidth }} className="flex-shrink-0 h-full overflow-hidden">
@@ -189,7 +266,7 @@ export function ChatPage() {
           </div>
         </ScrollArea>
 
-        <ChatInput onSend={sendMessage} disabled={sending} />
+        <ChatInput onSend={handleSend} disabled={sending} />
       </div>
 
       {workspaceOpen && taskId && cwd && (
