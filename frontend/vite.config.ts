@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    allowedHosts: ['lab.ai.xiaojukeji.com'],
     proxy: {
       '/api': {
         target: process.env.BACKEND_URL ?? 'http://localhost:8091',
