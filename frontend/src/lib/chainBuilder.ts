@@ -54,6 +54,7 @@ function assistantEntryToMessage(
   entry: AssistantEntry,
   toolResultMap: Map<string, AnsweredQuestion>,
   subagentTraceMap: Map<string, SubagentTrace>,
+  toolResultContentMap: Map<string, string>,
 ): Message {
   const content = entry.message.content
   const text = content
@@ -69,6 +70,8 @@ function assistantEntryToMessage(
         const trace = subagentTraceMap.get(tb.id)
         if (trace) block.subagentTrace = trace
       }
+      const result = toolResultContentMap.get(tb.id)
+      if (result !== undefined) block.result = result
       return block
     })
 
@@ -214,6 +217,31 @@ export function buildMessages(entries: SessionEntry[]): Message[] {
     }
   }
 
+  // ── Build generic tool result content map ───────────────────────────────────
+  const toolResultContentMap = new Map<string, string>()
+  for (const entry of mainEntries) {
+    if (entry.type !== 'user') continue
+    const userEntry = entry as UserEntry
+    const content = userEntry.message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      const b = block as { type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }
+      if (b.type !== 'tool_result' || !b.tool_use_id) continue
+      // Skip AskUserQuestion results (handled separately) and Agent results
+      if (userEntry.tool_use_result?.questions?.length || userEntry.tool_use_result?.agentId) continue
+      let text = ''
+      if (typeof b.content === 'string') {
+        text = b.content
+      } else if (Array.isArray(b.content)) {
+        text = (b.content as Array<{ type: string; text?: string }>)
+          .filter(c => c.type === 'text' && c.text)
+          .map(c => c.text!)
+          .join('\n')
+      }
+      if (text) toolResultContentMap.set(b.tool_use_id, text)
+    }
+  }
+
   // ── Build main messages ──────────────────────────────────────────────────────
   return mainEntries
     .filter(e => {
@@ -223,6 +251,6 @@ export function buildMessages(entries: SessionEntry[]): Message[] {
     .map(e =>
       e.type === 'user'
         ? userEntryToMessage(e as UserEntry)
-        : assistantEntryToMessage(e as AssistantEntry, toolResultMap, subagentTraceMap),
+        : assistantEntryToMessage(e as AssistantEntry, toolResultMap, subagentTraceMap, toolResultContentMap),
     )
 }

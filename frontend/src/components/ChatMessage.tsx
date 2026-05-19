@@ -42,10 +42,15 @@ function ThinkingCard({ blocks }: { blocks: ThinkingBlock[] }) {
 }
 
 
+const RESULT_PREVIEW_LENGTH = 200
+
 function ToolUseCard({ block }: { block: ToolUseBlock }) {
   const [expanded, setExpanded] = useState(false)
+  const [resultExpanded, setResultExpanded] = useState(false)
   const primary = primaryParam(block.name, block.input)
   const paramCount = Object.keys(block.input).length
+  const resultPreview = block.result ? block.result.slice(0, RESULT_PREVIEW_LENGTH) : null
+  const resultTruncated = block.result ? block.result.length > RESULT_PREVIEW_LENGTH : false
 
   return (
     <div className="rounded-lg border border-neutral-200 bg-white overflow-hidden text-xs">
@@ -72,6 +77,22 @@ function ToolUseCard({ block }: { block: ToolUseBlock }) {
           </pre>
         )}
       </div>
+      {resultPreview !== null && (
+        <div className="border-t border-neutral-100 px-2.5 py-1.5">
+          <pre className="text-[11px] text-neutral-500 whitespace-pre-wrap break-words">
+            {resultExpanded ? block.result : resultPreview}
+            {!resultExpanded && resultTruncated && '…'}
+          </pre>
+          {resultTruncated && (
+            <button
+              onClick={() => setResultExpanded(e => !e)}
+              className="mt-0.5 text-[11px] text-neutral-400 hover:text-neutral-600"
+            >
+              {resultExpanded ? 'show less' : 'show more'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

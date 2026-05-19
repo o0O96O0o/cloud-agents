@@ -159,6 +159,36 @@ export function useChat(username: string, onSessionCompleted?: () => void) {
             )
             break
           }
+          case 'message.user': {
+            const msgData = data as {
+              message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown }> }
+            }
+            const resultBlocks = (msgData.message?.content ?? []).filter(
+              b => b.type === 'tool_result' && b.tool_use_id
+            ) as Array<{ type: string; tool_use_id: string; content?: unknown }>
+            if (resultBlocks.length === 0) break
+            setMessages(prev =>
+              prev.map(m => {
+                if (m.id !== activeId || !m.toolUseBlocks) return m
+                const updated = m.toolUseBlocks.map(tb => {
+                  const resultBlock = resultBlocks.find(r => r.tool_use_id === tb.id)
+                  if (!resultBlock) return tb
+                  let text = ''
+                  if (typeof resultBlock.content === 'string') {
+                    text = resultBlock.content
+                  } else if (Array.isArray(resultBlock.content)) {
+                    text = (resultBlock.content as Array<{ type: string; text?: string }>)
+                      .filter(c => c.type === 'text' && c.text)
+                      .map(c => c.text!)
+                      .join('\n')
+                  }
+                  return text ? { ...tb, result: text } : tb
+                })
+                return { ...m, toolUseBlocks: updated }
+              })
+            )
+            break
+          }
           case 'permission.requested': {
             const d = data as {
               toolName: string

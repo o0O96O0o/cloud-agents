@@ -25,6 +25,7 @@ export interface ToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
+  result?: string
   subagentTrace?: SubagentTrace
 }
 
