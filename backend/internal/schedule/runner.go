@@ -165,7 +165,7 @@ func (ts *TaskServiceImpl) StreamMessage(ctx context.Context, t *task.Task, prom
 	// Drain SSE into a discard writer — the proxy still writes session.init,
 	// persists session_id, etc., because it uses the Task pointer directly.
 	w := &discardResponseWriter{}
-	return ts.Proxy.StreamMessage(ctx, t, prompt, nil, "bypassPermissions", w)
+	return ts.Proxy.StreamMessage(ctx, t, prompt, nil, "auto", w)
 }
 
 // discardResponseWriter satisfies http.ResponseWriter + http.Flusher by discarding all output.

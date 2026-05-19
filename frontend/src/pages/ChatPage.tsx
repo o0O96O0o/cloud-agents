@@ -169,7 +169,7 @@ export function ChatPage() {
           <DialogHeader>
             <DialogTitle>Anthropic API Key Required</DialogTitle>
             <DialogDescription>
-              Enter your Anthropic API key to start using Lucas. It will be encrypted and stored securely on your account.
+              Enter your Anthropic API key to start using Cloud Managed Agents. It will be encrypted and stored securely on your account.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -223,7 +223,7 @@ export function ChatPage() {
             >
               <PanelLeft size={16} />
             </button>
-            <span className="font-semibold text-sm">Lucas</span>
+            <span className="font-semibold text-sm">Cloud Managed Agents</span>
           </div>
           <div className="flex items-center gap-1">
             <button

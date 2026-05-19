@@ -23,7 +23,6 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
 const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
   { value: '', label: 'Default' },
   { value: 'acceptEdits', label: 'Accept Edits' },
-  { value: 'bypassPermissions', label: 'Bypass All' },
   { value: 'plan', label: 'Plan Only' },
   { value: 'dontAsk', label: "Don't Ask" },
   { value: 'auto', label: 'Auto' },

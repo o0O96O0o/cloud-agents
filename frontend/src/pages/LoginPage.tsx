@@ -51,7 +51,7 @@ export function LoginPage() {
   return (
     <div className="flex flex-col items-center justify-center h-[100dvh]">
       <div className="flex flex-col gap-3 w-full max-w-sm px-4">
-        <h1 className="text-lg font-semibold text-center">Welcome to Lucas</h1>
+        <h1 className="text-lg font-semibold text-center">Welcome to Cloud Managed Agents</h1>
 
         {config?.loginMode.includes('sso') && (
           <>

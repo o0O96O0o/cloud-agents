@@ -588,15 +588,15 @@ func TestSendMessage_PermissionModeThreaded(t *testing.T) {
 	rw := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rw)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/tasks/"+tsk.ID+"/messages",
-		strings.NewReader(`{"prompt":"hi","permissionMode":"bypassPermissions"}`))
+		strings.NewReader(`{"prompt":"hi","permissionMode":"auto"}`))
 	c.Params = gin.Params{{Key: "id", Value: tsk.ID}}
 	h.SendMessage(c)
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rw.Code)
 	}
-	if cap.capturedMode != "bypassPermissions" {
-		t.Errorf("expected permissionMode=bypassPermissions, got %q", cap.capturedMode)
+	if cap.capturedMode != "auto" {
+		t.Errorf("expected permissionMode=auto, got %q", cap.capturedMode)
 	}
 }
 

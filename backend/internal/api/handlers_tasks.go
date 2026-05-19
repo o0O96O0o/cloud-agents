@@ -171,8 +171,7 @@ func (h *TaskHandler) SendMessage(c *gin.Context) {
 	var permissionMode string
 
 	var validPermissionModes = map[string]bool{
-		"default": true, "acceptEdits": true, "bypassPermissions": true,
-		"plan": true, "dontAsk": true, "auto": true,
+		"default": true, "acceptEdits": true, "plan": true, "dontAsk": true, "auto": true,
 	}
 
 	ct := c.ContentType()
