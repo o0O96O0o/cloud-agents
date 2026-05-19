@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Plus, X } from 'lucide-react'
 import { createSchedule, getSchedule, updateSchedule } from '@/api/client'
 import type { CreateSchedulePayload } from '@/api/client'
 import { describeCron } from '@/lib/cron'
@@ -8,6 +8,11 @@ import { describeCron } from '@/lib/cron'
 type Mode = 'create' | 'edit'
 
 const DEFAULT_TIMEOUT = 1800
+
+interface EnvPair {
+  key: string
+  value: string
+}
 
 export function ScheduleFormPage({ mode }: { mode: Mode }) {
   const navigate = useNavigate()
@@ -21,6 +26,7 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
   const [gitUrl, setGitUrl] = useState('')
   const [timeoutSecs, setTimeoutSecs] = useState(DEFAULT_TIMEOUT)
   const [concurrency, setConcurrency] = useState(0)
+  const [envPairs, setEnvPairs] = useState<EnvPair[]>([])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -39,6 +45,9 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
         setGitUrl(s.git_url ?? '')
         setTimeoutSecs(s.timeout_secs)
         setConcurrency(s.concurrency)
+        if (s.extra_env) {
+          setEnvPairs(Object.entries(s.extra_env).map(([key, value]) => ({ key, value })))
+        }
       }).catch(() => navigate('/schedules'))
     }
   }, [mode, id, navigate])
@@ -50,6 +59,10 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
     setError('')
     setSaving(true)
     try {
+      const extraEnv = envPairs.reduce<Record<string, string>>((acc, { key, value }) => {
+        if (key.trim()) acc[key.trim()] = value
+        return acc
+      }, {})
       const payload: CreateSchedulePayload = {
         title: title || undefined,
         prompt,
@@ -58,6 +71,7 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
         git_url: gitUrl || undefined,
         timeout_secs: timeoutSecs,
         concurrency,
+        extra_env: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
       }
       if (mode === 'create') {
         const s = await createSchedule(payload)
@@ -71,7 +85,12 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
     } finally {
       setSaving(false)
     }
-  }, [mode, id, title, prompt, scheduleType, cronExpr, runAt, gitUrl, timeoutSecs, concurrency, navigate])
+  }, [mode, id, title, prompt, scheduleType, cronExpr, runAt, gitUrl, timeoutSecs, concurrency, envPairs, navigate])
+
+  const addEnvPair = () => setEnvPairs(p => [...p, { key: '', value: '' }])
+  const removeEnvPair = (i: number) => setEnvPairs(p => p.filter((_, idx) => idx !== i))
+  const updateEnvPair = (i: number, field: keyof EnvPair, val: string) =>
+    setEnvPairs(p => p.map((pair, idx) => idx === i ? { ...pair, [field]: val } : pair))
 
   return (
     <div className="min-h-screen bg-white">
@@ -169,6 +188,50 @@ export function ScheduleFormPage({ mode }: { mode: Mode }) {
             placeholder="https://github.com/org/repo"
             className="w-full px-3 py-2 text-sm border border-neutral-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-neutral-600">Extra environment variables</label>
+            <button
+              type="button"
+              onClick={addEnvPair}
+              className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
+            >
+              <Plus size={12} />
+              Add
+            </button>
+          </div>
+          {envPairs.length > 0 && (
+            <div className="space-y-1.5">
+              {envPairs.map((pair, i) => (
+                <div key={i} className="flex gap-1.5 items-center">
+                  <input
+                    type="text"
+                    value={pair.key}
+                    onChange={e => updateEnvPair(i, 'key', e.target.value)}
+                    placeholder="KEY"
+                    className="w-2/5 px-2 py-1.5 text-xs border border-neutral-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                  <span className="text-neutral-400 text-xs">=</span>
+                  <input
+                    type="text"
+                    value={pair.value}
+                    onChange={e => updateEnvPair(i, 'value', e.target.value)}
+                    placeholder="value"
+                    className="flex-1 px-2 py-1.5 text-xs border border-neutral-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeEnvPair(i)}
+                    className="p-1 text-neutral-400 hover:text-neutral-600 transition-colors"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="space-y-1">
