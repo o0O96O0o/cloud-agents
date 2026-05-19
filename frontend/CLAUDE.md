@@ -16,12 +16,17 @@ Adding a shadcn component: `npx shadcn@latest add <name>` (neutral palette, CSS 
 
 ### Routing (`src/App.tsx`)
 
-| Route                       | Component         | Auth                         |
-| --------------------------- | ----------------- | ---------------------------- |
-| `/`                         | `ChatPage`        | Protected (`ProtectedRoute`) |
-| `/resources`                | `ResourcesPage`   | Protected                    |
-| `/login`                    | `LoginPage`       | Public                       |
-| `/login/sso`, `/login/oidc` | `SSOCallbackPage` | Public                       |
+| Route                       | Component                        | Auth                         |
+| --------------------------- | -------------------------------- | ---------------------------- |
+| `/`                         | `ChatPage`                       | Protected (`ProtectedRoute`) |
+| `/resources`                | `ResourcesPage`                  | Protected                    |
+| `/settings`                 | `SettingsPage`                   | Protected                    |
+| `/schedules`                | `SchedulesPage`                  | Protected                    |
+| `/schedules/new`            | `ScheduleFormPage mode="create"` | Protected                    |
+| `/schedules/:id`            | `ScheduleDetailPage`             | Protected                    |
+| `/schedules/:id/edit`       | `ScheduleFormPage mode="edit"`   | Protected                    |
+| `/login`                    | `LoginPage`                      | Public                       |
+| `/login/sso`, `/login/oidc` | `SSOCallbackPage`                | Public                       |
 
 `ProtectedRoute` reads the JWT from localStorage via `auth.ts` and redirects to `/login` if absent or expired.
 
@@ -31,14 +36,21 @@ All chat state lives here. Returns:
 
 ```ts
 { messages, taskId, cwd, sandboxState, sending,
-  sendMessage, approvePermission, answerQuestion, newChat, loadTask }
+  hasMoreHistory, loadingMoreHistory,
+  sendMessage, approvePermission, answerQuestion,
+  newChat, loadTask, loadMoreHistory, startTask }
 ```
 
-`sendMessage` flow:
-1. Creates task if `taskId` is null.
-2. Appends optimistic user + empty assistant message (`status: 'streaming'`).
-3. Sets `sandboxState → 'provisioning'`.
-4. POSTs to backend, reads SSE body via the internal `parseSSE` async generator.
+- `hasMoreHistory` / `loadingMoreHistory` / `loadMoreHistory()` — paginated history loading; `loadMoreHistory` prepends older messages and advances the cursor.
+- `startTask(tid)` — activates a pre-created task (from `NewTaskDialog`) without fetching history.
+- `loadTask(tid, messages, cwd?, cursor?)` — loads history into state and sets the cursor for further pagination.
+
+`sendMessage(prompt, files?, permissionMode?)` flow:
+1. If `sending === true` (agent already active), routes to `steerMessage` immediately.
+2. Creates task if `taskId` is null.
+3. Appends optimistic user + empty assistant message (`status: 'streaming'`).
+4. Sets `sandboxState → 'provisioning'`.
+5. POSTs to backend (JSON or multipart), reads SSE body via the internal `parseSSE` async generator.
 
 `parseSSE` buffers partial chunks, yields `{ event, data }` pairs.
 
@@ -48,15 +60,15 @@ All chat state lives here. Returns:
 
 | Event                   | Effect                                                               |
 | ----------------------- | -------------------------------------------------------------------- |
-| `session.init`          | `sandboxState → 'running'`; stores `cwd`                             |
+| `session.init`          | `sandboxState → 'running'`; stores `cwd`; if count > 0 (steer), creates a new assistant bubble |
 | `message.assistant`     | Appends `data.text` delta; collects `tool_use` blocks                |
 | `permission.requested`  | Sets `status: 'requesting'`, attaches `permissionRequest` to message |
 | `question.asked`        | Sets `status: 'asking'`, attaches `pendingQuestions` to message      |
 | `session.status` (idle) | Sets `status: 'done'`                                                |
 | `task.started`          | Pushes a new `ToolActivity{done: false}`                             |
 | `task.progress`         | Updates last `ToolActivity` description + tool name                  |
-| `result`                | Sets `status: 'done'`                                                |
-| `session.completed`     | Marks all tool activities `done`, clears `sending`                   |
+| `result`                | Sets `status: 'done'`; aborted empty runs (`isError + aborted_streaming + no content`) are removed |
+| `session.completed`     | Marks all tool activities `done`, clears `sending`, calls `onSessionCompleted` |
 | `error`                 | Sets `status: 'error'`, `sandboxState → 'error'`                     |
 
 ### Message status lifecycle
@@ -76,13 +88,23 @@ any → error             (SSE error event or HTTP non-ok)
 
 **`ChatPage`** — three-column resizable layout: sidebar | chat | workspace panel (workspace only when `workspaceOpen && taskId && cwd`). Sidebar and workspace widths are draggable (160–480 px). `refreshToken` counter is incremented on `session.completed` to trigger workspace refresh.
 
-**`ResourcesPage`** — CRUD for `skill` and `mcp` resources. Tabbed view. Optimistic toggle for `is_active`. `ResourceForm` is a shared create/edit form component.
+**`ResourcesPage`** — CRUD for `skill` and `mcp` resources. Tabbed view. Optimistic toggle for `is_active`. `ResourceForm` is a shared create/edit form component. Supports ZIP upload for skills.
+
+**`SettingsPage`** — SSH private key and Anthropic API key management. Both stored encrypted server-side; `has_ssh_key` / `has_anthropic_key` flags indicate presence.
+
+**`SchedulesPage`** — lists user schedules with enabled/disabled toggle. Links to create and detail pages.
+
+**`ScheduleFormPage`** — create or edit a schedule (`mode="create" | "edit"`). Supports recurring cron expressions, one-time `run_at`, optional `git_url`, and `extra_env`.
+
+**`ScheduleDetailPage`** — schedule metadata + run history list. Each run links back to its task in `ChatPage`.
 
 ### Types (`src/types.ts`)
 
 `MessageStatus`: `'streaming' | 'done' | 'error' | 'requesting' | 'asking'`
 
-`Message` carries optional `permissionRequest`, `pendingQuestions`, `toolActivity[]`, and `toolUseBlocks[]` alongside `text`.
+`Message` carries optional `permissionRequest`, `pendingQuestions`, `answeredQuestions`, `toolActivity[]`, `toolUseBlocks[]`, `thinkingBlocks[]`, `attachments[]`, and `isCompactSummary` alongside `text`.
+
+`ToolUseBlock` carries an optional `subagentTrace?: SubagentTrace` for subagent results from `chainBuilder.ts`.
 
 ### History replay (`src/lib/chainBuilder.ts`)
 
