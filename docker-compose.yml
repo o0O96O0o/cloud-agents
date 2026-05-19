@@ -5,7 +5,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root_p
       MYSQL_DATABASE: l_lab
-    # Not exposed to host — only backend needs it. Use 3307:3306 here if you need host access.
+    ports:
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -16,7 +17,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    # Not exposed to host — only backend needs it. Use 6380:6379 here if you need host access.
+    ports:
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
