@@ -101,17 +101,18 @@ OpenSandbox server (:8080)
 
 | Package              | Responsibility                                                        |
 | -------------------- | --------------------------------------------------------------------- |
-| `internal/api`       | Gin router + HTTP handlers + request/response types                   |
-| `internal/task`      | Task state machine, repository interface, Memory/MySQL/Redis backends |
-| `internal/sandbox`   | OpenSandbox lifecycle (create → poll → health-check) + SSE proxy      |
-| `internal/schedule`  | Cron scheduler, schedule CRUD service, per-schedule fire logic        |
-| `internal/auth`      | HS256 JWT issue/verify, Bearer middleware, Gin context helpers        |
-| `internal/crypto`    | AES-256-GCM encrypt/decrypt for per-user secrets (SSH key, API key)  |
-| `internal/db`        | GORM models (User, Task, ScheduledTask), AutoMigrate, MySQL connection |
-| `internal/oidc`      | go-oidc provider wrapper + CLI login flow                             |
-| `internal/sso`       | Didi SSO HTTP client + handlers                                       |
-| `internal/storage`   | OFS (S3-compatible) client for conversation history                   |
-| `pkg/config`         | YAML config loader with defaults                                      |
+| `internal/api`       | Gin router + HTTP handlers (split per domain) + request/response types |
+| `internal/task`      | Task state machine, repository interface, Memory/MySQL/Redis backends  |
+| `internal/sandbox`   | OpenSandbox lifecycle (create → poll → health-check) + SSE proxy       |
+| `internal/schedule`  | Cron scheduler, schedule CRUD service, per-schedule fire logic         |
+| `internal/session`   | OFS session metadata retrieval + SessionStore interface                |
+| `internal/auth`      | HS256 JWT issue/verify, Bearer middleware, Gin context helpers         |
+| `internal/crypto`    | AES-256-GCM encrypt/decrypt for per-user secrets (SSH key, API key)   |
+| `internal/db`        | GORM models (User, Task, ScheduledTask, Kind, ScheduleToken), AutoMigrate, MySQL connection |
+| `internal/oidc`      | go-oidc provider wrapper + CLI login flow                              |
+| `internal/sso`       | Didi SSO HTTP client + handlers                                        |
+| `internal/storage`   | OFS (S3-compatible) client for conversation history                    |
+| `pkg/config`         | YAML config loader with defaults                                       |
 
 **Task state machine:** `pending → provisioning → running`, with `error` on failure. The sandbox is created lazily on the first message via `EnsureProvisioned`, which holds a distributed Redis lock to prevent double-provisioning. `session_id` is write-once and never cleared, so history in OFS remains accessible after a sandbox expires.
 
@@ -174,4 +175,4 @@ OpenSandbox server (:8080)
 ### Golang Best Practices
 
 - Prefer concrete types over `map[string]any`; define a struct if one doesn't exist.
-- Always update Swagger annotations in `internal/api/handlers.go` when adding or changing endpoints, then regenerate docs.
+- Always update Swagger annotations in the relevant `internal/api/handlers_<domain>.go` file when adding or changing endpoints, then regenerate docs.

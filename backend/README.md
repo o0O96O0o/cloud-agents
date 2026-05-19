@@ -110,7 +110,7 @@ Both MySQL and Redis are **required**. The server exits at startup if either is 
 
 Without Redis configured, the server falls back to `MemoryRepository` (dev only — all task state lost on restart).
 
-See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full storage architecture and lifecycle walkthrough.
+See [docs/specs/storage.md](docs/specs/storage.md) for the full storage architecture and lifecycle walkthrough.
 
 ---
 
@@ -119,52 +119,87 @@ See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full stor
 ```
 backend/
 ├── cmd/server/
-│   └── main.go                    # entry point: load config, wire deps, start server
+│   └── main.go                     # entry point: load config, wire deps, start server
 ├── internal/
 │   ├── api/
-│   │   ├── router.go              # Gin routes, RouterDeps wiring, CORS middleware
-│   │   ├── handlers.go            # HTTP handlers (one per endpoint)
-│   │   └── types.go               # request / response structs
+│   │   ├── router.go               # Gin routes, RouterDeps wiring, CORS + schedule-token middleware
+│   │   ├── handlers_tasks.go       # TaskHandler: tasks + messaging endpoints
+│   │   ├── handlers_resources.go   # ResourceHandler: skills + MCP resource endpoints
+│   │   ├── handlers_workspace.go   # WorkspaceHandler: workspace files + execd proxy
+│   │   ├── handlers_user.go        # UserHandler: user settings (SSH key, Anthropic key)
+│   │   ├── handlers_auth.go        # standalone funcs: password login + register
+│   │   ├── handlers_schedule.go    # ScheduleHandler: schedule CRUD + run history + tokens
+│   │   ├── interfaces.go           # all interface definitions
+│   │   ├── middleware.go           # CORS + scheduleTokenAuthMiddleware
+│   │   └── types.go                # request / response structs
 │   ├── auth/
-│   │   ├── token.go               # CreateToken / VerifyToken (HS256 JWTs)
-│   │   ├── middleware.go          # BearerAuth Gin middleware
-│   │   └── context.go             # set/get *db.User on gin.Context
+│   │   ├── token.go                # CreateToken / VerifyToken (HS256 JWTs)
+│   │   ├── middleware.go           # BearerAuth Gin middleware
+│   │   └── context.go              # set/get *db.User on gin.Context
 │   ├── db/
-│   │   ├── mysql.go               # db.Open + AutoMigrate (users + tasks)
-│   │   ├── user.go                # User model, FindOrCreate, FindByCredentials, AuthSource constants
-│   │   └── task.go                # Task model (persistent fields)
+│   │   ├── mysql.go                # db.Open + AutoMigrate
+│   │   ├── user.go                 # User model, FindOrCreate, FindByCredentials, AuthSource constants
+│   │   ├── user_repository.go      # UserRepository interface + MySQL implementation
+│   │   ├── task.go                 # Task model (persistent fields)
+│   │   ├── scheduled_task.go       # ScheduledTask model
+│   │   ├── kind.go                 # Kind model (skill / mcp resources)
+│   │   ├── kinds_repository.go     # KindsRepository interface + implementation
+│   │   ├── skill_meta.go           # SkillMeta helper struct
+│   │   └── schedule_token.go       # ScheduleToken model (per-schedule API tokens)
 │   ├── oidc/
-│   │   ├── service.go             # go-oidc wrapper: discovery, AuthURL, ExchangeCode, VerifyIDToken
-│   │   └── handlers.go            # login, callback, cli-login, cli-callback, cli-poll
+│   │   ├── service.go              # go-oidc wrapper: discovery, AuthURL, ExchangeCode, VerifyIDToken
+│   │   └── handlers.go             # login, callback, cli-login, cli-callback, cli-poll
 │   ├── sso/
-│   │   ├── service.go             # Didi SSO HTTP client: CheckCode, CheckUserTicket, LoginURL
-│   │   └── handlers.go            # login, callback
+│   │   ├── service.go              # Didi SSO HTTP client: CheckCode, CheckUserTicket, LoginURL
+│   │   └── handlers.go             # login, callback
 │   ├── sandbox/
-│   │   ├── client.go              # HTTP client for OpenSandbox lifecycle API
-│   │   ├── manager.go             # sandbox lifecycle: create → poll → health-check
-│   │   └── proxy.go               # SSE pipe from claude-agent-server to browser
+│   │   ├── client.go               # HTTP client for OpenSandbox lifecycle API
+│   │   ├── manager.go              # sandbox lifecycle: create → poll → health-check
+│   │   ├── proxy.go                # SSE pipe from claude-agent-server to browser
+│   │   ├── sshsetup.go             # SSH key injection into sandbox env
+│   │   ├── gitclone.go             # git URL injection + clone-on-provision logic
+│   │   └── anthropicsetup.go       # per-user Anthropic API key injection
+│   ├── schedule/
+│   │   ├── scheduler.go            # cron scheduler (robfig/cron), load/reload schedules
+│   │   ├── service.go              # schedule CRUD service (implements ScheduleStore)
+│   │   └── runner.go               # per-schedule fire logic: create task, run prompt, consume SSE
+│   ├── session/
+│   │   ├── session.go              # SessionStore interface
+│   │   └── ofs.go                  # OFS-backed SessionStore implementation
 │   ├── storage/
-│   │   └── client.go              # OFS (S3-compatible) client for conversation history
+│   │   └── client.go               # OFS (S3-compatible) client for conversation history
+│   ├── crypto/
+│   │   └── aes.go                  # AES-256-GCM encrypt/decrypt for per-user secrets
 │   └── task/
-│       ├── repository.go          # Repository interface + taskOps interface
-│       ├── store.go               # Task struct, in-process mutation methods, MemoryRepository
-│       ├── redis_lock.go          # redisLock struct (SetNX/Lua locking, shared helper)
-│       ├── redis_repository.go    # RedisRepository (legacy) + redisTaskOps
-│       └── mysql_repository.go    # MySQLRepository (production) + mysqlTaskOps
+│       ├── repository.go           # Repository interface + taskOps interface
+│       ├── store.go                # Task struct, in-process mutation methods, MemoryRepository
+│       ├── idgen.go                # task ID generation
+│       ├── redis_lock.go           # redisLock struct (SetNX/Lua locking, shared helper)
+│       ├── redis_repository.go     # RedisRepository + redisTaskOps
+│       └── mysql_repository.go     # MySQLRepository (production) + mysqlTaskOps
 ├── pkg/
 │   ├── config/
-│   │   └── config.go              # YAML config loader with defaults
+│   │   └── config.go               # YAML config loader with defaults
 │   └── constants/
 │       └── constants.go
 ├── docs/
-│   ├── docs.go                    # generated Swagger registration (do not edit manually)
-│   ├── swagger.json               # generated OpenAPI 2.0 spec
-│   ├── swagger.yaml               # generated OpenAPI 2.0 spec (YAML)
+│   ├── docs.go                     # generated Swagger registration (do not edit manually)
+│   ├── swagger.json                # generated OpenAPI 2.0 spec
+│   ├── swagger.yaml                # generated OpenAPI 2.0 spec (YAML)
 │   └── specs/
-│       ├── configuration.md       # Full configuration field reference
-│       ├── resource-mapping.md    # Task / Sandbox / Session lifecycle and invariants
-│       ├── redis-storage.md       # Redis data model and key operations
-│       └── ofsspec.md             # OFS file layout for session history
+│       ├── configuration.md        # Full configuration field reference
+│       ├── resource-mapping.md     # Task / Sandbox / Session lifecycle and invariants
+│       ├── storage.md              # MySQL, Redis, and OFS storage architecture
+│       ├── ofsspec.md              # OFS file layout for session history
+│       ├── scheduled-tasks.md      # Scheduled task data model, scheduler, frontend UI
+│       ├── ssh-key-management.md   # SSH key encryption, storage, sandbox injection
+│       ├── anthropic-key-management.md  # Per-user Anthropic API key storage and injection
+│       ├── resources.md            # Skill and MCP resource management
+│       ├── git-task-integration.md # Git URL per task, clone on provision
+│       ├── messaging.md            # SSE stream format, file attachments, proxy layer
+│       ├── workspace.md            # Workspace filesystem proxy via execd
+│       ├── data-management.md      # User, Task, Sandbox entity definitions
+│       └── transcript-format.md    # NDJSON conversation entry types and schema
 ├── go.mod
 └── go.sum
 ```
@@ -177,31 +212,89 @@ Interactive docs (Swagger UI) available at **`http://localhost:8091/swagger/inde
 
 **Auth endpoints (public)**
 
-| Method | Path                          | Description                                                                             |
-| ------ | ----------------------------- | --------------------------------------------------------------------------------------- |
-| `GET`  | `/api/auth/sso/login`         | Redirect to Didi SSO login page (requires `sso.app_id` in config)                       |
-| `GET`  | `/api/auth/sso/callback`      | SSO callback — issues app JWT, redirects to `{frontend_url}/login/sso#access_token=…`   |
-| `GET`  | `/api/auth/oidc/login`        | Redirect to OIDC provider (requires `oidc.client_id` in config)                         |
-| `GET`  | `/api/auth/oidc/callback`     | OIDC callback — issues app JWT, redirects to `{frontend_url}/login/oidc#access_token=…` |
-| `POST` | `/api/auth/oidc/cli-login`    | CLI OIDC — body `{session_id}`, returns `{auth_url}`. Requires Redis.                   |
-| `GET`  | `/api/auth/oidc/cli-callback` | CLI OIDC browser callback — writes token to Redis                                       |
-| `GET`  | `/api/auth/oidc/cli-poll`     | CLI OIDC poll — `?session_id=…` → `{status, token?}`                                    |
-| `POST` | `/api/auth/login`             | Password login — body `{username, password}` → `{token}`                                |
-| `GET`  | `/api/auth/dev/login`         | Dev login (no SSO/OIDC only) — `?username=…` → redirect with token                      |
-| `GET`  | `/api/runtime-config`         | Returns active login modes for the frontend                                             |
+| Method | Path                          | Description                                                                              |
+| ------ | ----------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`  | `/api/auth/sso/login`         | Redirect to Didi SSO login page (requires `sso.app_id` in config)                        |
+| `GET`  | `/api/auth/sso/callback`      | SSO callback — issues app JWT, redirects to `{frontend_url}/login/sso#access_token=…`    |
+| `GET`  | `/api/auth/oidc/login`        | Redirect to OIDC provider (requires `oidc.client_id` in config)                          |
+| `GET`  | `/api/auth/oidc/callback`     | OIDC callback — issues app JWT, redirects to `{frontend_url}/login/oidc#access_token=…`  |
+| `POST` | `/api/auth/oidc/cli-login`    | CLI OIDC — body `{session_id}`, returns `{auth_url}`. Requires Redis.                    |
+| `GET`  | `/api/auth/oidc/cli-callback` | CLI OIDC browser callback — writes token to Redis                                        |
+| `GET`  | `/api/auth/oidc/cli-poll`     | CLI OIDC poll — `?session_id=…` → `{status, token?}`                                     |
+| `POST` | `/api/auth/login`             | Password login — body `{username, password}` → `{access_token}`                          |
+| `POST` | `/api/auth/register`          | Register new user — body `{username, password, email?}` → `{access_token}`               |
+| `GET`  | `/api/runtime-config`         | Returns active login modes for the frontend                                              |
 
 **Task endpoints (protected — require `Authorization: Bearer <token>`)**
 
-| Method   | Path                      | Status | Description                                          |
-| -------- | ------------------------- | ------ | ---------------------------------------------------- |
-| `GET`    | `/api/tasks`              | 200    | List tasks for the authenticated user (newest first) |
-| `POST`   | `/api/tasks`              | 201    | Create a task → `{ "id": "<uuid>" }`                 |
-| `POST`   | `/api/tasks/:id/messages` | 200    | Send a message (SSE stream)                          |
-| `GET`    | `/api/tasks/:id`          | 200    | Get task state                                       |
-| `GET`    | `/api/tasks/:id/history`  | 200    | Get conversation history from OFS                    |
-| `DELETE` | `/api/tasks/:id`          | 204    | Delete task and tear down sandbox                    |
-| `GET`    | `/health`                 | 200    | Liveness probe → `{ "status": "ok" }`                |
-| `GET`    | `/swagger/*`              | —      | Swagger UI                                           |
+| Method   | Path                          | Status | Description                                              |
+| -------- | ----------------------------- | ------ | -------------------------------------------------------- |
+| `GET`    | `/api/tasks`                  | 200    | List tasks for the authenticated user (newest first)     |
+| `POST`   | `/api/tasks`                  | 201    | Create a task → `{ "id": "<uuid>" }`                     |
+| `POST`   | `/api/tasks/:id/messages`     | 200    | Send a message (SSE stream); supports multipart for files |
+| `POST`   | `/api/tasks/:id/steer`        | 200    | Inject prompt into an active agent run (steering)        |
+| `POST`   | `/api/tasks/:id/permissions`  | 200    | Respond to a pending tool permission request             |
+| `POST`   | `/api/tasks/:id/questions`    | 200    | Submit answers to a pending AskUserQuestion              |
+| `GET`    | `/api/tasks/:id`              | 200    | Get task state                                           |
+| `GET`    | `/api/tasks/:id/history`      | 200    | Get paginated conversation history from OFS              |
+| `DELETE` | `/api/tasks/:id`              | 204    | Delete task and tear down sandbox                        |
+
+**Resource endpoints (protected)**
+
+| Method   | Path                              | Description                                              |
+| -------- | --------------------------------- | -------------------------------------------------------- |
+| `GET`    | `/api/resources`                  | List all skill and MCP resources for the user            |
+| `POST`   | `/api/resources`                  | Create a skill or MCP resource                           |
+| `POST`   | `/api/resources/zip`              | Create a skill from a ZIP archive (multipart form)       |
+| `GET`    | `/api/resources/:id/content`      | Get the primary content of a skill (SKILL.md text)       |
+| `PUT`    | `/api/resources/:id`              | Update resource metadata or content                      |
+| `DELETE` | `/api/resources/:id`              | Delete a resource                                        |
+| `PUT`    | `/api/resources/:id/files/*filepath` | Upsert a file within a skill resource              |
+| `DELETE` | `/api/resources/:id/files/*filepath` | Delete a file from a skill resource                |
+
+**Workspace endpoints (protected)**
+
+| Method | Path                               | Description                                         |
+| ------ | ---------------------------------- | --------------------------------------------------- |
+| `GET`  | `/api/tasks/:id/workspace/files`   | List directory contents in the task's workspace     |
+| `GET`  | `/api/tasks/:id/workspace/file`    | Read a file from the task's workspace               |
+| `ANY`  | `/api/tasks/:id/execd/*path`       | Proxy requests to the execd filesystem service      |
+
+**User settings (protected)**
+
+| Method | Path                  | Description                                          |
+| ------ | --------------------- | ---------------------------------------------------- |
+| `GET`  | `/api/user/settings`  | Get user settings (`has_ssh_key`, `has_anthropic_key`) |
+| `PUT`  | `/api/user/settings`  | Update SSH key and/or Anthropic API key              |
+
+**Schedule endpoints (protected)**
+
+| Method   | Path                           | Description                                       |
+| -------- | ------------------------------ | ------------------------------------------------- |
+| `GET`    | `/api/schedules`               | List schedules for the authenticated user         |
+| `POST`   | `/api/schedules`               | Create a schedule                                 |
+| `GET`    | `/api/schedules/:id`           | Get a schedule                                    |
+| `PUT`    | `/api/schedules/:id`           | Update a schedule                                 |
+| `DELETE` | `/api/schedules/:id`           | Delete a schedule                                 |
+| `POST`   | `/api/schedules/:id/enable`    | Enable a schedule                                 |
+| `POST`   | `/api/schedules/:id/disable`   | Disable a schedule                                |
+| `POST`   | `/api/schedules/:id/run`       | Trigger an immediate manual run                   |
+| `GET`    | `/api/schedules/:id/runs`      | List run history for a schedule                   |
+| `POST`   | `/api/schedules/:id/tokens`    | Generate a schedule fire token                    |
+| `DELETE` | `/api/schedules/:id/tokens`    | Revoke the schedule fire token                    |
+
+**Public schedule endpoint (schedule-token auth only)**
+
+| Method | Path                            | Description                                        |
+| ------ | ------------------------------- | -------------------------------------------------- |
+| `POST` | `/public/schedules/:id/fire`    | Fire a schedule run using a schedule token         |
+
+**Utility**
+
+| Method | Path          | Description                           |
+| ------ | ------------- | ------------------------------------- |
+| `GET`  | `/health`     | Liveness probe → `{ "status": "ok" }` |
+| `GET`  | `/swagger/*`  | Swagger UI                            |
 
 ### GET /api/tasks — response
 
@@ -211,21 +304,23 @@ Interactive docs (Swagger UI) available at **`http://localhost:8091/swagger/inde
     "id": "a1b2c3...",
     "title": "Refactor authentication module",
     "state": "paused",
+    "git_url": "",
+    "schedule_id": "",
     "created_at": "2026-05-12T09:00:00Z",
     "updated_at": "2026-05-12T10:30:00Z"
   }
 ]
 ```
 
-Returns up to 100 tasks for the authenticated user, ordered by `updated_at` descending. Returns `[]` (not 401) when auth is disabled.
+Returns up to 100 tasks for the authenticated user, ordered by `updated_at` descending.
 
 ### POST /api/tasks — request body (optional)
 
 ```json
-{ "username": "alice", "env": { "KEY": "VALUE" } }
+{ "username": "alice", "title": "My task", "git_url": "git@github.com:org/repo.git", "env": { "KEY": "VALUE" } }
 ```
 
-`env` merges additional environment variables into the sandbox at provision time (overrides the base env from config).
+`env` merges additional environment variables into the sandbox at provision time (overrides the base env from config). `git_url` triggers a git clone on first provision (SSH key must be set).
 
 ### GET /api/tasks/:id — response
 
@@ -245,6 +340,17 @@ Returns up to 100 tasks for the authenticated user, ordered by `updated_at` desc
 `title` is set automatically after the first session stream completes, using the sandbox session's `summary` → `customTitle` → `firstPrompt` → original prompt as the fallback chain.
 
 See [docs/specs/resource-mapping.md](docs/specs/resource-mapping.md) for the full state table.
+
+### GET /api/tasks/:id/history — response
+
+```json
+{
+  "entries": [ /* array of NDJSON SessionEntry objects */ ],
+  "nextCursor": "opaque-cursor-string"
+}
+```
+
+`nextCursor` is empty when there are no more pages. Pass `?cursor=<value>` to fetch the next page of older entries.
 
 ### SSE stream format (proxied verbatim from claude-agent-server)
 
@@ -364,7 +470,7 @@ If the sandbox has expired, all sandbox fields (`state`, `sandbox_id`, `proxy_ba
 | `MemoryRepository` (dev)       | `map[string]*Task`  | same map                  | `sync.RWMutex` + per-task `sync.Mutex` |
 | `MySQLRepository` (production) | MySQL `tasks` table | Redis `sandbox:{id}` hash | Redis `task-lock:{id}`                 |
 
-See [docs/specs/redis-storage.md](docs/specs/redis-storage.md) for the full storage architecture, key operations, and a lifecycle walkthrough.
+See [docs/specs/storage.md](docs/specs/storage.md) for the full storage architecture, key operations, and a lifecycle walkthrough.
 
 ### Session ID (write-once)
 
@@ -447,6 +553,6 @@ General API metadata (`@title`, `@version`, `@host`, `@BasePath`) lives at the t
 
 ## Adding a New Endpoint
 
-1. Add a handler method to `Handler` in `internal/api/handlers.go` with Swagger annotations
-2. Register the route in `internal/api/router.go`
+1. Add a handler method to the appropriate domain handler in `internal/api/handlers_<domain>.go` with Swagger annotations (`@Summary`, `@Param`, `@Success`, `@Router`, etc.)
+2. Register the route in `internal/api/router.go` (protected group or public, as appropriate)
 3. Run `swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal` to regenerate docs

@@ -29,29 +29,38 @@ Font: Inter (loaded from `rsms.me/inter` CDN, applied via `@theme { --font-sans 
 ```
 src/
 ├── api/
-│   └── client.ts              # fetch wrappers for the backend REST API
+│   └── client.ts                # fetch wrappers for the backend REST API
 ├── components/
-│   ├── ui/                    # shadcn primitives (Button, Textarea, ScrollArea, Badge)
-│   ├── ChatMessage.tsx        # single message bubble
-│   ├── ChatInput.tsx          # auto-resizing textarea + send button
-│   ├── HistorySidepanel.tsx   # left sidebar: task list + new-chat button
-│   ├── ProtectedRoute.tsx     # redirects to /login if no valid JWT
-│   └── StatusBadge.tsx        # sandbox connection indicator
+│   ├── ui/                      # shadcn primitives (Button, Textarea, ScrollArea, Badge, Switch, Tabs, Dialog, Input)
+│   ├── ChatMessage.tsx          # single message bubble
+│   ├── ChatInput.tsx            # auto-resizing textarea + send button
+│   ├── HistorySidepanel.tsx     # left sidebar: task list + new-chat button
+│   ├── NewTaskDialog.tsx        # dialog for creating a new task (with title/git URL options)
+│   ├── ProtectedRoute.tsx       # redirects to /login if no valid JWT
+│   ├── ResourceForm.tsx         # shared create/edit form for skill and MCP resources
+│   ├── StatusBadge.tsx          # sandbox connection indicator
+│   └── WorkspacePanel.tsx       # right panel: workspace file browser
 ├── hooks/
-│   └── useChat.ts             # all state + SSE streaming logic
+│   └── useChat.ts               # all state + SSE streaming logic
 ├── lib/
-│   ├── auth.ts                # JWT token management (localStorage)
-│   ├── chainBuilder.ts        # convert SessionEntry[] → Message[] for history replay
-│   └── utils.ts               # cn() helper (clsx + tailwind-merge)
+│   ├── auth.ts                  # JWT token management (localStorage)
+│   ├── chainBuilder.ts          # convert SessionEntry[] → Message[] for history replay
+│   ├── cron.ts                  # human-readable cron expression descriptions (cronstrue)
+│   └── utils.ts                 # cn() helper (clsx + tailwind-merge)
 ├── pages/
-│   ├── ChatPage.tsx           # root page layout (with sidebar)
-│   ├── LoginPage.tsx          # SSO / OIDC / dev login buttons
-│   └── SSOCallbackPage.tsx    # reads #access_token= from URL fragment
+│   ├── ChatPage.tsx             # three-column resizable layout: sidebar | chat | workspace
+│   ├── LoginPage.tsx            # SSO / OIDC / password login buttons
+│   ├── ResourcesPage.tsx        # CRUD for skill and MCP resources (tabbed)
+│   ├── ScheduleDetailPage.tsx   # schedule detail + run history
+│   ├── ScheduleFormPage.tsx     # create/edit form for schedules
+│   ├── SchedulesPage.tsx        # list of schedules with enable/disable toggle
+│   ├── SettingsPage.tsx         # user settings: SSH key + Anthropic API key management
+│   └── SSOCallbackPage.tsx      # reads #access_token= from URL fragment (SSO + OIDC)
 ├── types/
-│   └── session.ts             # typed SessionEntry union from claude-agent-sdk
-├── types.ts                   # shared TypeScript types (Message, ToolUseBlock, …)
-├── App.tsx
-├── index.css                  # Tailwind import + Inter @theme
+│   └── session.ts               # typed SessionEntry union from claude-agent-sdk
+├── types.ts                     # shared TypeScript types (Message, ToolUseBlock, …)
+├── App.tsx                      # router setup and route definitions
+├── index.css                    # Tailwind import + Inter @theme
 └── main.tsx
 ```
 
@@ -59,60 +68,127 @@ src/
 
 Thin fetch wrappers. Base URL comes from `VITE_API_BASE` (defaults to `''`, so the Vite proxy handles routing in dev).
 
-| Function                                | Description                                                     |
-| --------------------------------------- | --------------------------------------------------------------- |
-| `getRuntimeConfig()`                    | `GET /api/runtime-config` → login mode flags                    |
-| `listTasks()`                           | `GET /api/tasks` → `TaskSummary[]` (newest first)               |
-| `createTask(username)`                  | `POST /api/tasks` → task `id`                                   |
-| `sendMessage(taskId, prompt)`           | `POST /api/tasks/:id/messages` → raw `Response` for SSE reading |
-| `getHistory(taskId)`                    | `GET /api/tasks/:id/history` → `SessionEntry[]`                 |
-| `deleteTask(taskId)`                    | `DELETE /api/tasks/:id`                                         |
-| `respondToPermission(taskId, decision)` | `POST /api/tasks/:id/permissions`                               |
-| `respondToQuestion(taskId, answers)`    | `POST /api/tasks/:id/questions`                                 |
+**Auth**
 
-`sendMessage` returns the raw `Response` rather than parsed data so the caller can read the body as a stream.
+| Function                                  | Description                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| `getRuntimeConfig()`                      | `GET /api/runtime-config` → `RuntimeConfig` (login mode flags)      |
+| `loginWithPassword(username, password)`   | `POST /api/auth/login` → access token string                        |
+| `register(username, password, email?)`    | `POST /api/auth/register` → access token string                     |
+
+**Tasks**
+
+| Function                                              | Description                                                            |
+| ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| `listTasks()`                                         | `GET /api/tasks` → `TaskSummary[]` (newest first)                      |
+| `createTask(username, options?)`                      | `POST /api/tasks` → task `id`; options: `{ title, gitUrl, env }`       |
+| `getTask(taskId)`                                     | `GET /api/tasks/:id` → `Task`                                          |
+| `sendMessage(taskId, prompt, files?, permissionMode?)` | `POST /api/tasks/:id/messages` → raw `Response` for SSE reading       |
+| `steerMessage(taskId, prompt, priority?)`             | `POST /api/tasks/:id/steer` → void (injects prompt into active run)    |
+| `getHistory(taskId, cursor?)`                         | `GET /api/tasks/:id/history` → `HistoryPage { entries, nextCursor }`   |
+| `deleteTask(taskId)`                                  | `DELETE /api/tasks/:id`                                                |
+| `respondToPermission(taskId, decision)`               | `POST /api/tasks/:id/permissions`                                      |
+| `respondToQuestion(taskId, answers)`                  | `POST /api/tasks/:id/questions`                                        |
+
+`sendMessage` supports both JSON and multipart (when `files` are provided). It returns the raw `Response` for SSE streaming.
+
+`getHistory` returns paginated results. Pass `cursor` from the previous page's `nextCursor` to fetch older entries.
+
+**Resources**
+
+| Function                             | Description                                                     |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `listResources()`                    | `GET /api/resources` → `Resource[]`                             |
+| `createResource(payload)`            | `POST /api/resources` → `Resource`                              |
+| `createSkillFromZip(name, file)`     | `POST /api/resources/zip` → `Resource` (multipart ZIP upload)   |
+| `getSkillContent(id)`                | `GET /api/resources/:id/content` → skill SKILL.md text          |
+| `updateResource(id, payload)`        | `PUT /api/resources/:id` → `Resource`                           |
+| `deleteResource(id)`                 | `DELETE /api/resources/:id`                                     |
+
+**Workspace**
+
+| Function                       | Description                                              |
+| ------------------------------ | -------------------------------------------------------- |
+| `listDir(taskId, dir)`         | `GET /api/tasks/:id/workspace/files?path=…` → `FileInfo[]` |
+| `readFile(taskId, filePath)`   | `GET /api/tasks/:id/workspace/file?path=…` → text        |
+
+**User settings**
+
+| Function                         | Description                                                        |
+| -------------------------------- | ------------------------------------------------------------------ |
+| `getUserSettings()`              | `GET /api/user/settings` → `{ has_ssh_key, has_anthropic_key }`    |
+| `updateUserSettings(body)`       | `PUT /api/user/settings`; body: `{ ssh_private_key?, anthropic_api_key? }` |
+
+**Schedules**
+
+| Function                          | Description                                          |
+| --------------------------------- | ---------------------------------------------------- |
+| `listSchedules()`                 | `GET /api/schedules` → `Schedule[]`                  |
+| `createSchedule(payload)`         | `POST /api/schedules` → `Schedule`                   |
+| `getSchedule(id)`                 | `GET /api/schedules/:id` → `Schedule`                |
+| `updateSchedule(id, payload)`     | `PUT /api/schedules/:id` → `Schedule`                |
+| `deleteSchedule(id)`              | `DELETE /api/schedules/:id`                          |
+| `enableSchedule(id)`              | `POST /api/schedules/:id/enable`                     |
+| `disableSchedule(id)`             | `POST /api/schedules/:id/disable`                    |
+| `runScheduleNow(id)`              | `POST /api/schedules/:id/run` → `{ task_id }`        |
+| `listScheduleRuns(id)`            | `GET /api/schedules/:id/runs` → `ScheduleRun[]`      |
+| `generateScheduleToken(id)`       | `POST /api/schedules/:id/tokens` → `ScheduleTokenInfo` |
+| `revokeScheduleToken(id)`         | `DELETE /api/schedules/:id/tokens`                   |
 
 ## State & SSE (`src/hooks/useChat.ts`)
 
-`useChat(username)` is the single source of truth for all chat state.
+`useChat(username, onSessionCompleted?)` is the single source of truth for all chat state.
 
 ```ts
-const { messages, taskId, sandboxState, sending, sendMessage, loadTask, newChat, approvePermission, answerQuestion } = useChat(username)
+const {
+  messages, taskId, cwd, sandboxState, sending,
+  hasMoreHistory, loadingMoreHistory,
+  sendMessage, approvePermission, answerQuestion,
+  newChat, loadTask, loadMoreHistory, startTask,
+} = useChat(username, onSessionCompleted)
 ```
 
-| Value                         | Type                          | Description                                     |
-| ----------------------------- | ----------------------------- | ----------------------------------------------- |
-| `messages`                    | `Message[]`                   | Full conversation history                       |
-| `taskId`                      | `string \| null`              | Current task ID; null for a fresh chat          |
-| `sandboxState`                | `SandboxState`                | `idle \| provisioning \| running \| error`      |
-| `sending`                     | `boolean`                     | True while a message is in-flight               |
-| `sendMessage(prompt)`         | `(string) => void`            | Send a message and stream the response          |
-| `loadTask(id, messages)`      | `(string, Message[]) => void` | Load history from a previous task and resume it |
-| `newChat()`                   | `() => void`                  | Reset to an empty fresh chat                    |
-| `approvePermission(approved)` | `(boolean) => void`           | Respond to a pending tool permission            |
-| `answerQuestion(answers)`     | `(Record) => void`            | Submit answers to a pending question            |
+| Value                                          | Type                                                         | Description                                              |
+| ---------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------- |
+| `messages`                                     | `Message[]`                                                  | Full conversation history                                |
+| `taskId`                                       | `string \| null`                                             | Current task ID; null for a fresh chat                   |
+| `cwd`                                          | `string \| null`                                             | Working directory reported by the most recent `session.init` |
+| `sandboxState`                                 | `SandboxState`                                               | `idle \| provisioning \| running \| error`               |
+| `sending`                                      | `boolean`                                                    | True while a message is in-flight                        |
+| `hasMoreHistory`                               | `boolean`                                                    | True when there are older history pages to load          |
+| `loadingMoreHistory`                           | `boolean`                                                    | True while an older-history fetch is in progress         |
+| `sendMessage(prompt, files?, permissionMode?)` | function                                                     | Send a message; steers if agent is already running       |
+| `loadTask(id, messages, cwd?, cursor?)`        | function                                                     | Load history from a previous task and make it resumable  |
+| `loadMoreHistory()`                            | `() => Promise<void>`                                        | Fetch the next page of older history (prepends messages) |
+| `startTask(tid)`                               | `(string) => void`                                           | Activate a pre-created task without loading history      |
+| `newChat()`                                    | `() => void`                                                 | Reset to an empty fresh chat                             |
+| `approvePermission(approved)`                  | `(boolean) => void`                                          | Respond to a pending tool permission                     |
+| `answerQuestion(answers)`                      | `(Record) => void`                                           | Submit answers to a pending question                     |
 
 ### `sendMessage` flow
 
-1. If `taskId` is null, calls `createTask(username)` and stores the id.
-2. Appends the user message and an empty assistant message (status `streaming`) to the list.
-3. Sets `sandboxState` to `provisioning` (backend may need to cold-start the sandbox).
-4. POSTs to the backend and reads the SSE stream via `parseSSE`.
+1. If `sending === true` (agent already running), routes directly to `steerMessage` and returns.
+2. If `taskId` is null, calls `createTask(username)` and stores the id.
+3. Appends the user message and an empty assistant message (status `streaming`) to the list.
+4. Sets `sandboxState` to `provisioning` (backend may need to cold-start the sandbox).
+5. POSTs to the backend (JSON or multipart) and reads the SSE stream via `parseSSE`.
 
 ### SSE event handling
 
-| Event                   | Action                                                                 |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `session.init`          | Sets `sandboxState` → `running`                                        |
-| `message.assistant`     | Appends `data.text` to the assistant message (delta, not replace)      |
-| `session.status` (idle) | Marks assistant message `done`                                         |
-| `task.started`          | Pushes a new `ToolActivity{done: false}` onto the message              |
-| `task.progress`         | Updates the last `ToolActivity` with current description and tool name |
-| `result`                | Marks assistant message `done`                                         |
-| `session.completed`     | Marks all tool activities `done`, re-enables input                     |
-| `error`                 | Marks assistant message `error`, sets `sandboxState` → `error`         |
+| Event                   | Action                                                                   |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `session.init`          | Sets `sandboxState → 'running'`; stores `cwd`; on steer creates a new assistant bubble |
+| `message.assistant`     | Appends `data.text` delta; collects `tool_use` blocks                    |
+| `permission.requested`  | Sets `status: 'requesting'`, attaches `permissionRequest` to message     |
+| `question.asked`        | Sets `status: 'asking'`, attaches `pendingQuestions` to message          |
+| `session.status` (idle) | Sets `status: 'done'`                                                    |
+| `task.started`          | Pushes a new `ToolActivity{done: false}`                                 |
+| `task.progress`         | Updates the last `ToolActivity` description + tool name                  |
+| `result`                | Sets `status: 'done'`; aborted empty runs with no content are removed    |
+| `session.completed`     | Marks all tool activities `done`, clears `sending`, calls `onSessionCompleted` |
+| `error`                 | Sets `status: 'error'`, `sandboxState → 'error'`, clears `sending`      |
 
-`session.completed` (not `result`) is the signal used to re-enable the input, matching the backend's terminal event.
+`session.completed` (not `result`) is the terminal event that re-enables input.
 
 ### SSE parser
 
@@ -137,26 +213,55 @@ Key types exported:
 - `VisibleEntry` — `UserEntry | AssistantEntry` (shown in chat)
 - `ConversationEntry` — entries with `uuid` (participate in chain building)
 
+## Routes
+
+| Path                  | Component                        | Auth      |
+| --------------------- | -------------------------------- | --------- |
+| `/`                   | `ChatPage`                       | Protected |
+| `/resources`          | `ResourcesPage`                  | Protected |
+| `/settings`           | `SettingsPage`                   | Protected |
+| `/schedules`          | `SchedulesPage`                  | Protected |
+| `/schedules/new`      | `ScheduleFormPage mode="create"` | Protected |
+| `/schedules/:id`      | `ScheduleDetailPage`             | Protected |
+| `/schedules/:id/edit` | `ScheduleFormPage mode="edit"`   | Protected |
+| `/login`              | `LoginPage`                      | Public    |
+| `/login/sso`          | `SSOCallbackPage`                | Public    |
+| `/login/oidc`         | `SSOCallbackPage`                | Public    |
+
 ## Components
 
 ### `ChatPage` (`src/pages/ChatPage.tsx`)
 
-Two-column layout filling `100dvh`. The left column (sidebar) is togglable; the right column holds the chat.
+Three-column resizable layout filling `100dvh`. Sidebar (left) and workspace panel (right) widths are draggable (160–480 px). Workspace panel only shows when `workspaceOpen && taskId && cwd`.
 
 ```
-┌──────────────┬──────────────────────────────┐
-│  History     │  [☰] "Lucas"  | StatusBadge  │  ← header
-│  ──────────  ├──────────────────────────────┤
-│  Task A      │  ScrollArea (flex-1)          │
-│  Task B      │    empty state or messages    │
-│  …           ├──────────────────────────────┤
-│  [✏ New]     │  ChatInput                    │
-└──────────────┴──────────────────────────────┘
+┌──────────────┬──────────────────────┬──────────────┐
+│  History     │  [☰] | StatusBadge   │  Workspace   │
+│  ──────────  ├──────────────────────┤  file tree   │
+│  Task A      │  ScrollArea (flex-1) │              │
+│  Task B      │    messages          │              │
+│  …           ├──────────────────────┤              │
+│  [✏ New]     │  ChatInput           │              │
+└──────────────┴──────────────────────┴──────────────┘
 ```
 
-On mount, `listTasks()` populates the sidebar. Clicking a task calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages)`, loading its history into the chat and making it immediately resumable. Clicking the pencil icon (or the `☰` toggle removes/shows the sidebar) calls `newChat()` to reset to an empty state.
+On mount, `listTasks()` populates the sidebar. Clicking a task calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages, cwd)`, loading its history. `refreshToken` is incremented on `session.completed` to trigger workspace refresh.
 
-Auto-scrolls to the bottom whenever `messages` changes.
+### `SettingsPage` (`src/pages/SettingsPage.tsx`)
+
+User settings: SSH private key and Anthropic API key storage. Both are encrypted server-side and never returned in plaintext.
+
+### `SchedulesPage` (`src/pages/SchedulesPage.tsx`)
+
+Lists all user schedules with enabled/disabled toggle. Links to the create form and schedule detail pages.
+
+### `ScheduleFormPage` (`src/pages/ScheduleFormPage.tsx`)
+
+Create or edit a schedule. Supports recurring cron expressions and one-time `run_at` timestamps. Optional `git_url` and `extra_env` fields.
+
+### `ScheduleDetailPage` (`src/pages/ScheduleDetailPage.tsx`)
+
+Shows schedule details + paginated run history with status badges. Each run links back to its ChatPage task.
 
 ### `ChatMessage` (`src/components/ChatMessage.tsx`)
 
