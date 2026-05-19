@@ -105,7 +105,7 @@ func (s *Scheduler) registerOnce(rec db.ScheduledTask) {
 
 // fire is called by the cron runner for each scheduled firing.
 func (s *Scheduler) fire(schedID string) {
-	if err := runFire(context.Background(), s.gormDB, s.taskSvc, schedID); err != nil {
+	if _, err := RunFire(context.Background(), s.gormDB, s.taskSvc, schedID, ""); err != nil {
 		logger.Default().Error("schedule: fire error", "id", schedID, "err", err)
 	}
 }

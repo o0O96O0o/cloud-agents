@@ -116,6 +116,7 @@ func (r *MySQLRepository) Get(ctx context.Context, id string) (*Task, error) {
 		provisioned:  rec.Provisioned,
 		gitURL:       rec.GitURL,
 		errorMsg:     rec.ErrorMsg,
+		runOutcome:   rec.RunOutcome,
 	}
 	t.ops = &mysqlTaskOps{db: r.db, rdb: r.rdb, lock: redisLock{rdb: r.rdb, taskID: id}}
 	return t, nil
@@ -151,6 +152,7 @@ func (r *MySQLRepository) List(ctx context.Context, username string) ([]TaskSumm
 			GitURL:     rec.GitURL,
 			ErrorMsg:   rec.ErrorMsg,
 			ScheduleID: sid,
+			RunOutcome: rec.RunOutcome,
 			CreatedAt:  rec.CreatedAt,
 			UpdatedAt:  rec.UpdatedAt,
 		}
@@ -176,6 +178,7 @@ func (r *MySQLRepository) ListBySchedule(ctx context.Context, scheduleID string)
 			GitURL:     rec.GitURL,
 			ErrorMsg:   rec.ErrorMsg,
 			ScheduleID: scheduleID,
+			RunOutcome: rec.RunOutcome,
 			CreatedAt:  rec.CreatedAt,
 			UpdatedAt:  rec.UpdatedAt,
 		}
@@ -351,6 +354,16 @@ func (o *mysqlTaskOps) persistTitle(title string) {
 		Where("id = ?", o.lock.taskID).
 		Update("title", title).Error; err != nil {
 		logger.Default().Error("mysql: persist title", "task_id", o.lock.taskID, "err", err)
+	}
+}
+
+// persistRunOutcome writes run_outcome only if it is currently empty (write-once invariant).
+func (o *mysqlTaskOps) persistRunOutcome(outcome string) {
+	ctx := context.Background()
+	if err := o.db.WithContext(ctx).Model(&db.Task{}).
+		Where("id = ? AND (run_outcome = '' OR run_outcome IS NULL)", o.lock.taskID).
+		Update("run_outcome", outcome).Error; err != nil {
+		logger.Default().Error("mysql: persist run_outcome", "task_id", o.lock.taskID, "err", err)
 	}
 }
 

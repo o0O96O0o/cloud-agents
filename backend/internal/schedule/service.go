@@ -2,6 +2,9 @@ package schedule
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -224,3 +227,68 @@ func (s *Service) getOwned(ctx context.Context, id string, userID uint) (*db.Sch
 }
 
 var ErrNotFound = errors.New("schedule not found")
+
+// GenerateToken creates a new fire token for the given schedule, revoking any existing one.
+// The raw token is returned once and never stored; only its SHA-256 hash is persisted.
+func (s *Service) GenerateToken(ctx context.Context, scheduleID string, userID uint) (string, *db.ScheduleToken, error) {
+	if _, err := s.getOwned(ctx, scheduleID, userID); err != nil {
+		return "", nil, err
+	}
+
+	// Revoke any existing active token for this schedule.
+	now := time.Now()
+	s.db.WithContext(ctx).Model(&db.ScheduleToken{}).
+		Where("schedule_id = ? AND revoked_at IS NULL", scheduleID).
+		Update("revoked_at", now)
+
+	// Generate 32 random bytes → 64-char hex raw token.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, fmt.Errorf("generate token bytes: %w", err)
+	}
+	rawHex := hex.EncodeToString(raw)
+
+	// Store only the SHA-256 hash.
+	h := sha256.Sum256([]byte(rawHex))
+	tokenHash := hex.EncodeToString(h[:])
+
+	rec := &db.ScheduleToken{
+		ID:         uuid.New().String(),
+		ScheduleID: scheduleID,
+		TokenHash:  tokenHash,
+	}
+	if err := s.db.WithContext(ctx).Create(rec).Error; err != nil {
+		return "", nil, fmt.Errorf("create schedule token: %w", err)
+	}
+	return rawHex, rec, nil
+}
+
+// RevokeToken revokes the active fire token for the given schedule (no-op if none exists).
+func (s *Service) RevokeToken(ctx context.Context, scheduleID string, userID uint) error {
+	if _, err := s.getOwned(ctx, scheduleID, userID); err != nil {
+		return err
+	}
+	now := time.Now()
+	return s.db.WithContext(ctx).Model(&db.ScheduleToken{}).
+		Where("schedule_id = ? AND revoked_at IS NULL", scheduleID).
+		Update("revoked_at", now).Error
+}
+
+// LookupScheduleByToken hashes the raw token and returns the matching schedule.
+func (s *Service) LookupScheduleByToken(ctx context.Context, rawToken string) (*db.ScheduledTask, error) {
+	h := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(h[:])
+
+	var tok db.ScheduleToken
+	if err := s.db.WithContext(ctx).
+		Where("token_hash = ? AND revoked_at IS NULL", tokenHash).
+		First(&tok).Error; err != nil {
+		return nil, fmt.Errorf("lookup token: %w", err)
+	}
+
+	var sched db.ScheduledTask
+	if err := s.db.WithContext(ctx).Where("id = ?", tok.ScheduleID).First(&sched).Error; err != nil {
+		return nil, fmt.Errorf("load schedule for token: %w", err)
+	}
+	return &sched, nil
+}

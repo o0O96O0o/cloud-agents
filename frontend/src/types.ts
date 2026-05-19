@@ -65,6 +65,7 @@ export interface Message {
   pendingQuestions?: Question[]
   answeredQuestions?: AnsweredQuestion[]
   attachments?: { name: string; blob: Blob }[]
+  isCompactSummary?: boolean
 }
 
 export interface ToolActivity {

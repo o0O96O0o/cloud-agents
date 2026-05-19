@@ -170,11 +170,18 @@ Implemented in `internal/storage/client.go` using `aws-sdk-go-v2`. Initialised i
 type OFSClient interface {
     // ListHistory returns session prefixes for the given task.
     // Each prefix is "{username}/history/{encoded_cwd}/{session_id}/".
+    // Used internally; callers should prefer GetHistoryPage.
     ListHistory(ctx context.Context, username, taskID string) ([]string, error)
 
     // GetHistory downloads all part files under a session prefix and returns
     // their NDJSON entries. Entries with isMeta:true are excluded.
     GetHistory(ctx context.Context, sessionPrefix string) ([]json.RawMessage, error)
+
+    // GetHistoryPage returns entries for one session and the cursor for the
+    // next-older session. cursor="" requests the latest (most recent) session.
+    // nextCursor="" means no more history is available.
+    // Sessions are ranked newest-first by their highest part-file epoch timestamp.
+    GetHistoryPage(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
 
     // GetSessionMeta returns the agent process record for the given task by
     // scanning "{username}/.claude/sessions/" and matching on CWD.
@@ -194,15 +201,43 @@ func (c *Client) PutObject(ctx context.Context, key string, data []byte) error
 func (c *Client) GetObjectBytes(ctx context.Context, key string) ([]byte, error)
 ```
 
-### Retrieving History for a Task
+### SessionStore abstraction
+
+`internal/session.SessionStore` wraps `OFSClient` and hides addressing details from API handlers:
 
 ```go
-keys, err := fileStore.ListHistory(ctx, t.Username, t.ID)
-if err != nil || len(keys) == 0 {
-    // OFS not configured, sandbox not yet started, or no history written
+type SessionStore interface {
+    GetHistory(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
 }
-entries, err := fileStore.GetHistory(ctx, keys[0])
 ```
+
+`OFSSessionStore` is the production implementation. `GET /api/tasks/:id/history` calls `SessionStore.GetHistory` — it never touches `OFSClient` directly.
+
+### Retrieving History for a Task (paginated)
+
+```go
+// First page — newest turn (2 part files)
+entries, nextCursor, err := sessionStore.GetHistory(ctx, username, taskID, "")
+
+// Subsequent pages — older turns
+for nextCursor != "" {
+    entries, nextCursor, err = sessionStore.GetHistory(ctx, username, taskID, nextCursor)
+}
+```
+
+The HTTP API exposes this via `GET /api/tasks/:id/history?cursor=<cursor>`:
+
+```json
+{
+  "entries": [ ... ],
+  "nextCursor": "alice/history/-workspace-alice-task-abc/86613a9f-.../part-1778587171934-af0c9c.ndjson"
+  // nextCursor is "" when no older files exist
+}
+```
+
+`GetHistoryPage` implementation: one `ListObjectsV2` pass collects all part-file keys (metadata only, no downloads). Keys are sorted lexicographically (= chronological order). The newest `historyPageSize` (2) keys are sliced; if a cursor is given, the 2 keys strictly older than that key are returned instead. Only the keys in the window are downloaded. The cursor is the S3 key of the **oldest** part file in the current page.
+
+Since tasks always have a single agent session, and the SDK flushes exactly 2 part files per user turn (one content file, one `last-prompt` meta file), a page of 2 part files = 1 conversation turn.
 
 ---
 
@@ -218,4 +253,4 @@ entries, err := fileStore.GetHistory(ctx, keys[0])
 
 `{encoded_cwd}` = CWD with every `/` replaced by `-`, e.g. `-workspace-{username}-{task_id}`.
 
-`{username}` and `{task_id}` come from the backend `Task` record. The agent `sessionId` is discovered via `ListHistory` (extracted from the S3 key path) or `GetSessionMeta` (read from the process record JSON).
+`{username}` and `{task_id}` come from the backend `Task` record. The agent `sessionId` is embedded in the S3 key path and extracted by `GetHistoryPage` during session ranking. `GetSessionMeta` (process record JSON) is an alternative lookup used by non-history paths.

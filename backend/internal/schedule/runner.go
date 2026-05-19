@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -25,11 +26,14 @@ type TaskService interface {
 	StreamMessage(ctx context.Context, t *task.Task, prompt string) error
 }
 
-// runFire is the core fire logic for a single schedule execution.
-func runFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID string) error {
+// RunFire is the core fire logic for a single schedule execution. It returns quickly
+// after launching a goroutine; the actual provision+stream work happens asynchronously.
+// extraText is appended to the schedule's prompt when non-empty (used by the API fire endpoint).
+// Returns the task ID that was created, or an error if the schedule could not be loaded.
+func RunFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID string, extraText string) (string, error) {
 	var rec db.ScheduledTask
 	if err := gormDB.WithContext(ctx).Where("id = ? AND enabled = ?", schedID, true).First(&rec).Error; err != nil {
-		return fmt.Errorf("load schedule %s: %w", schedID, err)
+		return "", fmt.Errorf("load schedule %s: %w", schedID, err)
 	}
 
 	// Concurrency=skip: abort if a run for this schedule is still active.
@@ -40,26 +44,26 @@ func runFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID 
 			Count(&count)
 		if count > 0 {
 			logger.Default().Info("schedule: skipping fire — previous run still active", "id", schedID)
-			return nil
+			return "", nil
 		}
 	}
 
 	// Resolve user name from UserID.
 	var user db.User
 	if err := gormDB.WithContext(ctx).Where("id = ?", rec.UserID).First(&user).Error; err != nil {
-		return fmt.Errorf("load user for schedule %s: %w", schedID, err)
+		return "", fmt.Errorf("load user for schedule %s: %w", schedID, err)
 	}
 
 	var extraEnv map[string]string
 	if rec.ExtraEnv != "" && rec.ExtraEnv != "null" {
 		if err := json.Unmarshal([]byte(rec.ExtraEnv), &extraEnv); err != nil {
-			return fmt.Errorf("unmarshal extra_env for schedule %s: %w", schedID, err)
+			return "", fmt.Errorf("unmarshal extra_env for schedule %s: %w", schedID, err)
 		}
 	}
 
 	t, err := taskSvc.CreateTask(ctx, user.UserName, extraEnv, rec.GitURL, schedID)
 	if err != nil {
-		return fmt.Errorf("create task for schedule %s: %w", schedID, err)
+		return "", fmt.Errorf("create task for schedule %s: %w", schedID, err)
 	}
 
 	// Auto-title: "[schedule title] – YYYY-MM-DD HH:mm"
@@ -68,6 +72,12 @@ func runFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID 
 		title = schedID
 	}
 	t.SetTitle(fmt.Sprintf("%s – %s", title, time.Now().Format("2006-01-02 15:04")))
+
+	// Build combined prompt.
+	prompt := rec.Prompt
+	if extraText != "" {
+		prompt = rec.Prompt + "\n\n---\nContext from trigger:\n" + extraText
+	}
 
 	// Update last_run_at + next_run_at.
 	now := time.Now()
@@ -85,23 +95,31 @@ func runFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID 
 	}
 	gormDB.WithContext(ctx).Model(&db.ScheduledTask{}).Where("id = ?", schedID).Updates(updates)
 
-	// Provision and run the agent in a goroutine so fire() returns quickly.
+	// Provision and run the agent in a goroutine so RunFire returns quickly.
 	go func() {
 		runCtx, cancel := context.WithTimeout(context.Background(), time.Duration(rec.TimeoutSecs)*time.Second)
 		defer cancel()
 
 		if err := taskSvc.EnsureProvisioned(runCtx, t); err != nil {
 			t.SetError(err.Error())
+			t.SetRunOutcome("failed")
 			logger.Default().Error("schedule: provision failed", "schedule_id", schedID, "task_id", t.ID, "err", err)
 			return
 		}
 
-		if err := taskSvc.StreamMessage(runCtx, t, rec.Prompt); err != nil {
+		err := taskSvc.StreamMessage(runCtx, t, prompt)
+		switch {
+		case err == nil:
+			t.SetRunOutcome("completed")
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+			t.SetRunOutcome("timeout")
+		default:
+			t.SetRunOutcome("failed")
 			logger.Default().Error("schedule: stream error", "schedule_id", schedID, "task_id", t.ID, "err", err)
 		}
 	}()
 
-	return nil
+	return t.ID, nil
 }
 
 // ---- onceSpec + onceJob: cron schedule that fires once at a specific time ----

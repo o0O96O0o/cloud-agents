@@ -12,6 +12,7 @@ import (
 	"github.com/l-lab/cloud-agents/internal/db"
 	oidcpkg "github.com/l-lab/cloud-agents/internal/oidc"
 	"github.com/l-lab/cloud-agents/internal/sandbox"
+	"github.com/l-lab/cloud-agents/internal/session"
 	ssopkg "github.com/l-lab/cloud-agents/internal/sso"
 	"github.com/l-lab/cloud-agents/pkg/config"
 	"gorm.io/gorm"
@@ -24,24 +25,25 @@ type ScheduleService = ScheduleStore
 type RouterDeps struct {
 	Store           TaskStore
 	Manager         SandboxManager
-	FileStore       FileStore
-	KindsRepo       db.KindsRepository // nil → resource API returns 503
-	OFSWriter       ResourceWriter     // nil → resource content upload returns 503
-	OFSReader       ResourceReader     // nil → resource content read returns 503
-	WorkspaceReader WorkspaceReader    // nil → OFS workspace browsing returns 409
-	UserRepo        db.UserRepository  // nil → user settings update returns 503
-	ScheduleService ScheduleService    // nil → schedule API unavailable
-	DB              *gorm.DB           // kept for auth.BearerAuth and OIDC/SSO middleware
+	FileStore       FileStore              // GetSessionMeta, DeleteHistory
+	SessionStore    session.SessionStore   // nil → GET history returns 503
+	KindsRepo       db.KindsRepository    // nil → resource API returns 503
+	OFSWriter       ResourceWriter        // nil → resource content upload returns 503
+	OFSReader       ResourceReader        // nil → resource content read returns 503
+	WorkspaceReader WorkspaceReader       // nil → OFS workspace browsing returns 409
+	UserRepo        db.UserRepository     // nil → user settings update returns 503
+	ScheduleService ScheduleService       // nil → schedule API unavailable
+	DB              *gorm.DB              // kept for auth.BearerAuth and OIDC/SSO middleware
 	CORSOrigin      string
-	Redis           *redis.Client    // nil → CLI OIDC flow unavailable
+	Redis           *redis.Client         // nil → CLI OIDC flow unavailable
 	Cfg             *config.Config
-	OIDCService     *oidcpkg.Service // nil → OIDC routes not registered
-	SSOService      *ssopkg.Service  // nil → SSO routes not registered
+	OIDCService     *oidcpkg.Service      // nil → OIDC routes not registered
+	SSOService      *ssopkg.Service       // nil → SSO routes not registered
 }
 
 // NewRouter builds the HTTP handler for the tasks API.
 func NewRouter(deps RouterDeps) http.Handler {
-	taskH := NewTaskHandler(deps.Store, deps.Manager, sandbox.NewProxy(), deps.FileStore)
+	taskH := NewTaskHandler(deps.Store, deps.Manager, sandbox.NewProxy(), deps.FileStore, deps.SessionStore)
 
 	resourceH := NewResourceHandler(deps.KindsRepo, deps.OFSWriter, deps.OFSReader)
 
@@ -60,7 +62,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	var schedH *ScheduleHandler
 	if deps.ScheduleService != nil {
-		schedH = NewScheduleHandler(deps.ScheduleService, deps.Store, deps.Manager, sandbox.NewProxy())
+		schedH = NewScheduleHandler(deps.ScheduleService, deps.Store, deps.Manager, sandbox.NewProxy(), deps.DB)
 	}
 
 	r := gin.New()
@@ -128,7 +130,16 @@ func NewRouter(deps RouterDeps) http.Handler {
 			protected.POST("/schedules/:id/disable", schedH.DisableSchedule)
 			protected.POST("/schedules/:id/run", schedH.RunScheduleNow)
 			protected.GET("/schedules/:id/runs", schedH.ListScheduleRuns)
+			protected.POST("/schedules/:id/tokens", schedH.GenerateScheduleToken)
+			protected.DELETE("/schedules/:id/tokens", schedH.RevokeScheduleToken)
 		}
+	}
+
+	// ── Public schedule fire endpoint (token auth only, no JWT) ──────────────
+	if schedH != nil && deps.ScheduleService != nil {
+		public := r.Group("/public")
+		public.Use(scheduleTokenAuthMiddleware(deps.ScheduleService))
+		public.POST("/schedules/:id/fire", schedH.FireSchedule)
 	}
 
 	r.GET("/health", taskH.Health)

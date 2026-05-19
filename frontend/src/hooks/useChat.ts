@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
-import { createTask, sendMessage as apiSendMessage, steerMessage as apiSteerMessage, respondToPermission, respondToQuestion as apiRespondToQuestion } from '@/api/client'
+import { createTask, getHistory, sendMessage as apiSendMessage, steerMessage as apiSteerMessage, respondToPermission, respondToQuestion as apiRespondToQuestion } from '@/api/client'
+import { buildMessages } from '@/lib/chainBuilder'
 import type { Message, PermissionRequest, Question, SandboxState, ToolActivity, ToolUseBlock } from '@/types'
 
 async function* parseSSE(response: Response) {
@@ -36,6 +37,8 @@ export function useChat(username: string, onSessionCompleted?: () => void) {
   const [cwd, setCwd] = useState<string | null>(null)
   const [sandboxState, setSandboxState] = useState<SandboxState>('idle')
   const [sending, setSending] = useState(false)
+  const [historyCursor, setHistoryCursor] = useState<string>('')
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false)
   const currentAssistantMsgIdRef = useRef<string | null>(null)
 
   const approvePermission = useCallback(async (approved: boolean) => {
@@ -278,17 +281,34 @@ export function useChat(username: string, onSessionCompleted?: () => void) {
     setCwd(null)
     setSandboxState('idle')
     setSending(false)
+    setHistoryCursor('')
     currentAssistantMsgIdRef.current = null
   }, [])
 
-  const loadTask = useCallback((tid: string, historyMessages: Message[], taskCwd?: string) => {
+  const loadTask = useCallback((tid: string, historyMessages: Message[], taskCwd?: string, initialCursor?: string) => {
     setTaskId(tid)
     setMessages(historyMessages)
     if (taskCwd) setCwd(taskCwd)
     setSandboxState('idle')
     setSending(false)
+    setHistoryCursor(initialCursor ?? '')
     currentAssistantMsgIdRef.current = null
   }, [])
+
+  const loadMoreHistory = useCallback(async () => {
+    if (!taskId || !historyCursor || loadingMoreHistory) return
+    setLoadingMoreHistory(true)
+    try {
+      const page = await getHistory(taskId, historyCursor)
+      const olderMsgs = buildMessages(page.entries)
+      setMessages(prev => [...olderMsgs, ...prev])
+      setHistoryCursor(page.nextCursor)
+    } catch {
+      // leave cursor intact so the user can retry
+    } finally {
+      setLoadingMoreHistory(false)
+    }
+  }, [taskId, historyCursor, loadingMoreHistory])
 
   // Start a pre-created task (from the New Task dialog) without loading history.
   const startTask = useCallback((tid: string) => {
@@ -297,8 +317,14 @@ export function useChat(username: string, onSessionCompleted?: () => void) {
     setCwd(null)
     setSandboxState('idle')
     setSending(false)
+    setHistoryCursor('')
     currentAssistantMsgIdRef.current = null
   }, [])
 
-  return { messages, taskId, cwd, sandboxState, sending, sendMessage, approvePermission, answerQuestion, newChat, loadTask, startTask }
+  return {
+    messages, taskId, cwd, sandboxState, sending,
+    hasMoreHistory: historyCursor !== '',
+    loadingMoreHistory,
+    sendMessage, approvePermission, answerQuestion, newChat, loadTask, loadMoreHistory, startTask,
+  }
 }

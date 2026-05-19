@@ -144,12 +144,18 @@ export async function listTasks(): Promise<TaskSummary[]> {
   return res.json() as Promise<TaskSummary[]>
 }
 
-export async function getHistory(taskId: string): Promise<SessionEntry[]> {
-  const res = await fetch(`${BASE}/api/tasks/${taskId}/history`, {
+export interface HistoryPage {
+  entries: SessionEntry[]
+  nextCursor: string
+}
+
+export async function getHistory(taskId: string, cursor?: string): Promise<HistoryPage> {
+  const params = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  const res = await fetch(`${BASE}/api/tasks/${taskId}/history${params}`, {
     headers: authHeaders(),
   })
   if (!res.ok) throw new Error('Failed to get history')
-  return res.json() as Promise<SessionEntry[]>
+  return res.json() as Promise<HistoryPage>
 }
 
 export interface Resource {
@@ -356,8 +362,15 @@ export interface ScheduleRun {
   title: string
   state: string
   error_msg?: string
+  run_outcome?: string
   created_at: string
   updated_at: string
+}
+
+export interface ScheduleTokenInfo {
+  token_id: string
+  raw_token: string
+  created_at: string
 }
 
 export async function listSchedules(): Promise<Schedule[]> {
@@ -420,4 +433,24 @@ export async function listScheduleRuns(id: string): Promise<ScheduleRun[]> {
   const res = await fetch(`${BASE}/api/schedules/${id}/runs`, { headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to list runs')
   return res.json() as Promise<ScheduleRun[]>
+}
+
+export async function generateScheduleToken(id: string): Promise<ScheduleTokenInfo> {
+  const res = await fetch(`${BASE}/api/schedules/${id}/tokens`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(data.error ?? 'Failed to generate token')
+  }
+  return res.json() as Promise<ScheduleTokenInfo>
+}
+
+export async function revokeScheduleToken(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/schedules/${id}/tokens`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok && res.status !== 404) throw new Error('Failed to revoke token')
 }

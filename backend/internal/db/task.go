@@ -12,6 +12,7 @@ type Task struct {
 	GitURL      string  `gorm:"column:git_url;size:512"`
 	ErrorMsg    string  `gorm:"column:error_msg;type:text"`
 	ScheduleID  *string `gorm:"column:schedule_id;size:36;default:null;index"`
+	RunOutcome  string  `gorm:"column:run_outcome;size:20;default:null"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 

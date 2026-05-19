@@ -1416,14 +1416,14 @@ const docTemplate = `{
         },
         "/api/tasks/{id}/history": {
             "get": {
-                "description": "Retrieve the conversation history for a task. Requires fileStore to be configured.",
+                "description": "Returns one session's worth of entries newest-first. Pass the returned nextCursor as ?cursor= to fetch the next older session. nextCursor=\"\" means no more history.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "tasks"
                 ],
-                "summary": "Get task conversation history",
+                "summary": "Get task conversation history (paginated)",
                 "parameters": [
                     {
                         "type": "string",
@@ -1431,16 +1431,19 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pagination cursor (omit for latest session)",
+                        "name": "cursor",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Raw session entries",
+                        "description": "OK",
                         "schema": {
-                            "type": "array",
-                            "items": {
-                                "type": "object"
-                            }
+                            "$ref": "#/definitions/internal_api.historyPageResponse"
                         }
                     },
                     "404": {
@@ -2060,6 +2063,23 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.historyPageResponse": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer"
+                        }
+                    }
+                },
+                "nextCursor": {
                     "type": "string"
                 }
             }

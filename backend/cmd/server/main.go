@@ -18,6 +18,7 @@ import (
 	oidcpkg "github.com/l-lab/cloud-agents/internal/oidc"
 	"github.com/l-lab/cloud-agents/internal/sandbox"
 	"github.com/l-lab/cloud-agents/internal/schedule"
+	"github.com/l-lab/cloud-agents/internal/session"
 	ssopkg "github.com/l-lab/cloud-agents/internal/sso"
 	"github.com/l-lab/cloud-agents/internal/storage"
 	"github.com/l-lab/cloud-agents/internal/task"
@@ -169,10 +170,16 @@ func main() {
 		logger.Default().Info("schedule: scheduler started")
 	}
 
+	var sessionStore *session.OFSSessionStore
+	if ofsClient != nil {
+		sessionStore = session.NewOFSSessionStore(ofsClient)
+	}
+
 	router := api.NewRouter(api.RouterDeps{
 		Store:           repo,
 		Manager:         mgr,
 		FileStore:       ofsClient,
+		SessionStore:    sessionStore,
 		KindsRepo:       kindsRepo,
 		OFSWriter:       ofsClient,
 		OFSReader:       ofsClient,

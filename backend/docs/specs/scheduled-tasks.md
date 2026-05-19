@@ -14,10 +14,16 @@ User creates a Schedule (POST /api/schedules)
   → Scheduler registers cron entry
 
 Cron fires at the scheduled time
-  → runFire creates a child Task (tasks.schedule_id = schedule.id)
+  → RunFire creates a child Task (tasks.schedule_id = schedule.id)
   → sandbox provisioned, agent runs schedule.prompt
   → transcript written to OFS under TASK_ID (same as any other task)
   → session is resumable from the chat UI
+  → run_outcome written to the task once the goroutine finishes
+
+External system fires via API token (POST /public/schedules/:id/fire)
+  → scheduleTokenAuthMiddleware verifies Bearer token against schedule_tokens table
+  → optional "text" appended to prompt before calling RunFire
+  → same outcome tracking as cron-triggered runs
 
 User opens chat sidebar
   → tasks with schedule_id show a calendar icon
@@ -55,20 +61,40 @@ type ScheduledTask struct {
 
 ### Modified table: `tasks`
 
-A new nullable column links each run back to its parent schedule:
+Two nullable columns link each run back to its parent schedule and record the terminal outcome:
 
 ```sql
 ALTER TABLE tasks ADD COLUMN schedule_id VARCHAR(36) DEFAULT NULL;
 CREATE INDEX idx_tasks_schedule_id ON tasks(schedule_id);
+ALTER TABLE tasks ADD COLUMN run_outcome VARCHAR(20) DEFAULT NULL;
 ```
 
-GORM field added to `internal/db/task.go`:
+GORM fields in `internal/db/task.go`:
 
 ```go
 ScheduleID *string `gorm:"column:schedule_id;size:36;default:null;index"`
+RunOutcome  string  `gorm:"column:run_outcome;size:20;default:null"`
 ```
 
-`""` is never written; the column is either `NULL` (no schedule) or a valid UUID.
+`schedule_id`: `""` is never written; either `NULL` (manually created) or a valid UUID.
+
+`run_outcome`: empty until the runner goroutine finishes, then one of `"completed"`, `"failed"`, or `"timeout"`. Write-once: `SetRunOutcome` is a no-op if the field is already set.
+
+### New table: `schedule_tokens`
+
+GORM model: `internal/db/schedule_token.go`
+
+```go
+type ScheduleToken struct {
+    ID         string     // UUID primary key
+    ScheduleID string     // FK → scheduled_tasks.id
+    TokenHash  string     // hex(sha256(rawToken)); raw token is never stored
+    CreatedAt  time.Time
+    RevokedAt  *time.Time // non-null means revoked
+}
+```
+
+One active token per schedule at a time. `GenerateToken` revokes any existing active token before inserting a new one.
 
 ---
 
@@ -89,17 +115,19 @@ ScheduleID *string `gorm:"column:schedule_id;size:36;default:null;index"`
   ```
   Returns all tasks with a matching `schedule_id`, newest first. Used by `GET /api/schedules/:id/runs`.
 
-- `TaskSummary` gains `ScheduleID string` populated from the DB column.
+- `TaskSummary` gains `ScheduleID string` and `RunOutcome string` populated from the DB record. `MySQLRepository.List`, `ListBySchedule`, and `Get` all populate `RunOutcome`.
 
-Both `MemoryRepository` and `MySQLRepository` implement the new signature.
+- `Task` gains a `runOutcome string` field (in-process) and a `SetRunOutcome(outcome string)` method. `SetRunOutcome` is **write-once**: if the field is already set, subsequent calls are no-ops. Persisted via `taskOps.persistRunOutcome`, which uses a conditional `UPDATE ... WHERE run_outcome IS NULL OR run_outcome = ''` to enforce write-once at the DB level. `redisTaskOps` implements the method as a no-op (Redis-backed tasks have no durable outcome support).
+
+Both `MemoryRepository` and `MySQLRepository` implement all repository changes.
 
 ---
 
 ## `internal/schedule` Package
 
-### `service.go` — CRUD
+### `service.go` — CRUD + Token Management
 
-`Service` owns all CRUD operations on `scheduled_tasks`. It calls `Scheduler.Reload` or `Scheduler.Remove` after every write so the running cron always reflects the DB state.
+`Service` owns all CRUD operations on `scheduled_tasks` and the `schedule_tokens` table. It calls `Scheduler.Reload` or `Scheduler.Remove` after every write so the running cron always reflects the DB state.
 
 ```
 Service.Create  → validate, INSERT, call scheduler.Reload(id)
@@ -108,6 +136,28 @@ Service.Delete  → DELETE, call scheduler.Remove(id)
 Service.Toggle  → UPDATE enabled=true/false, then Reload or Remove
 Service.Get     → SELECT by id + userID (ownership check)
 Service.List    → SELECT by userID
+```
+
+**Token methods:**
+
+```
+Service.GenerateToken(ctx, scheduleID, userID)
+  → ownership check via getOwned
+  → UPDATE schedule_tokens SET revoked_at=now WHERE schedule_id=? AND revoked_at IS NULL
+  → crypto/rand.Read(32 bytes) → hex-encode → rawToken (64 hex chars)
+  → tokenHash = hex(sha256(rawToken))
+  → INSERT schedule_tokens(id, schedule_id, token_hash)
+  → return (rawToken, *ScheduleToken, nil)
+
+Service.RevokeToken(ctx, scheduleID, userID)
+  → ownership check
+  → UPDATE schedule_tokens SET revoked_at=now WHERE schedule_id=? AND revoked_at IS NULL
+
+Service.LookupScheduleByToken(ctx, rawToken)
+  → tokenHash = hex(sha256(rawToken))
+  → SELECT * FROM schedule_tokens WHERE token_hash=? AND revoked_at IS NULL
+  → SELECT * FROM scheduled_tasks WHERE id = tok.ScheduleID
+  → return *ScheduledTask
 ```
 
 **Validation rules (enforced in `Create` and `Update`):**
@@ -151,21 +201,28 @@ func (o onceSpec) Next(after time.Time) time.Time {
 
 ### `runner.go` — Fire Logic
 
-`runFire(ctx, gormDB, taskSvc, schedID)` is the single function called on each cron tick:
+`RunFire(ctx, gormDB, taskSvc, schedID, extraText)` is the exported function called on each cron tick and by the API fire endpoint:
 
 ```
 1. Load db.ScheduledTask (must be enabled)
 2. If Concurrency == 0: count active tasks with this schedule_id
-      state NOT IN (StateError, StateNew) → count > 0 → return nil (skip)
+      state NOT IN (StateError, StateNew) → count > 0 → return ("", nil) (skip)
 3. Load db.User by UserID to get username
 4. Unmarshal ExtraEnv JSON
 5. taskSvc.CreateTask(ctx, username, extraEnv, gitURL, schedID)
 6. t.SetTitle("<Title> – YYYY-MM-DD HH:mm")
-7. UPDATE scheduled_tasks: last_run_at = now, next_run_at = sched.Next(now)
+7. Build combined prompt:
+      prompt = rec.Prompt
+      if extraText != "": prompt += "\n\n---\nContext from trigger:\n" + extraText
+8. UPDATE scheduled_tasks: last_run_at = now, next_run_at = sched.Next(now)
       For @once: also set enabled=false, next_run_at=nil
-8. go func(): context.WithTimeout(Background(), TimeoutSecs)
-      EnsureProvisioned → ProvisionForTask
-      StreamMessage(ctx, t, Prompt, discardResponseWriter{})
+9. go func(): context.WithTimeout(Background(), TimeoutSecs)
+      EnsureProvisioned → ProvisionForTask → on error: SetError + SetRunOutcome("failed")
+      StreamMessage(ctx, t, prompt) → switch err:
+        nil                             → SetRunOutcome("completed")
+        DeadlineExceeded | Canceled     → SetRunOutcome("timeout")
+        other                           → SetRunOutcome("failed")
+10. return (t.ID, nil)
 ```
 
 The goroutine uses `context.Background()` (not the request context) so provisioning survives client disconnects. `discardResponseWriter` satisfies `http.ResponseWriter` + `http.Flusher` by discarding all bytes — the transcript is still written to OFS because the proxy writes to the `*task.Task` pointer directly, not to the writer.
@@ -243,11 +300,44 @@ Toggles the `enabled` flag and re-registers or removes the cron entry.
 
 ### `POST /api/schedules/:id/run`
 
-Fires the schedule immediately (ignores concurrency policy). Creates a task and returns its ID.
+Fires the schedule immediately (ignores enabled check — user is explicitly requesting a run). Creates a task and returns its ID. Sets `run_outcome` on the spawned task via an inline goroutine identical to `RunFire`'s goroutine (same `completed`/`failed`/`timeout` logic).
 
 **Response** `200 { "task_id": "<uuid>" }`.
 
 **Frontend** navigates to `/?task=<task_id>` so the user sees the live session.
+
+### `POST /api/schedules/:id/tokens`
+
+Requires JWT. Revokes any existing token and generates a new one.
+
+**Response** `201`:
+```json
+{ "token_id": "<uuid>", "raw_token": "abc123...", "created_at": "..." }
+```
+`raw_token` is shown **once only**.
+
+### `DELETE /api/schedules/:id/tokens`
+
+Requires JWT. Revokes the active token (no-op if none exists).
+
+**Response** `204`.
+
+### `POST /public/schedules/:id/fire`
+
+No JWT required. Authenticated via `Authorization: Bearer <raw_token>`.
+
+**Middleware** (`scheduleTokenAuthMiddleware`): hashes the Bearer token, queries `schedule_tokens`, rejects with `401` if no active token matches or the schedule ID in the path doesn't match.
+
+**Request body** (optional):
+```json
+{ "text": "Deploy #442 failed. Logs: ..." }
+```
+
+**Behavior:**
+1. Verify schedule exists (`404` if not) and is enabled (`409` if disabled).
+2. Append `text` to prompt if non-empty.
+3. Call `RunFire` (respects concurrency policy).
+4. Return `200 { "task_id": "<uuid>" }`.
 
 ### `GET /api/schedules/:id/runs`
 
@@ -258,17 +348,20 @@ Lists all tasks created by this schedule (newest first).
 ```json
 [
   {
-    "id":         "<task_uuid>",
-    "title":      "Daily standup – 2026-05-14 08:00",
-    "state":      "active",
-    "error_msg":  "",
-    "created_at": "...",
-    "updated_at": "..."
+    "id":          "<task_uuid>",
+    "title":       "Daily standup – 2026-05-14 08:00",
+    "state":       "active",
+    "run_outcome": "completed",
+    "error_msg":   "",
+    "created_at":  "...",
+    "updated_at":  "..."
   }
 ]
 ```
 
 `state` is the derived API label (`pending`, `provisioning`, `idle`, `active`, `error`, `resuming`, `paused`) computed the same way as `GET /api/tasks`.
+
+`run_outcome`: `""` (in-progress or not set), `"completed"`, `"failed"`, or `"timeout"`.
 
 ### `scheduleResponse` shape
 
@@ -318,12 +411,22 @@ sandbox.Proxy    ─┘
                    ↓
               schedule.NewScheduler(gormDB, taskServiceImpl)
                    ↓
-              schedule.NewService(gormDB, scheduler)
+              schedule.NewService(gormDB, scheduler)   ← implements ScheduleStore (all 9 methods incl. token methods)
                    ↓
-              api.RouterDeps{ ScheduleService: schedSvc }
+              api.RouterDeps{ ScheduleService: schedSvc, DB: gormDB }
                    ↓
-              NewRouter → h.withSchedule(schedSvc)
-                        → registers 9 schedule routes
+              NewRouter
+                → NewScheduleHandler(schedSvc, taskStore, manager, proxy, gormDB)
+                → registers 11 protected schedule routes:
+                    GET/POST         /api/schedules
+                    GET/PUT/DELETE   /api/schedules/:id
+                    POST             /api/schedules/:id/enable|disable|run
+                    GET              /api/schedules/:id/runs
+                    POST             /api/schedules/:id/tokens
+                    DELETE           /api/schedules/:id/tokens
+                → registers 1 public route (token-auth only):
+                    POST             /public/schedules/:id/fire
+                    (via scheduleTokenAuthMiddleware)
 
 On server start:
   if cfg.Schedule.Enabled: scheduler.Start(ctx)
@@ -337,11 +440,31 @@ On server shutdown:
 
 ### API client (`src/api/client.ts`)
 
-New types: `Schedule`, `CreateSchedulePayload`, `UpdateSchedulePayload`, `ScheduleRun`.
+Types:
+
+| Type | Fields |
+|---|---|
+| `Schedule` | `id`, `title`, `prompt`, `cron_expr`, `run_at?`, `extra_env?`, `git_url?`, `timeout_secs`, `concurrency`, `enabled`, `last_run_at?`, `next_run_at?`, `created_at` |
+| `CreateSchedulePayload` / `UpdateSchedulePayload` | mirrors the backend request types |
+| `ScheduleRun` | `id`, `title`, `state`, `error_msg?`, `run_outcome?`, `created_at`, `updated_at` |
+| `ScheduleTokenInfo` | `token_id`, `raw_token`, `created_at` — returned once by `generateScheduleToken` |
 
 `TaskSummary` gains `schedule_id?: string`.
 
-New functions: `listSchedules`, `getSchedule`, `createSchedule`, `updateSchedule`, `deleteSchedule`, `enableSchedule`, `disableSchedule`, `runScheduleNow`, `listScheduleRuns`.
+Functions:
+
+| Function | Method + Path |
+|---|---|
+| `listSchedules` | `GET /api/schedules` |
+| `createSchedule` | `POST /api/schedules` |
+| `getSchedule` | `GET /api/schedules/:id` |
+| `updateSchedule` | `PUT /api/schedules/:id` |
+| `deleteSchedule` | `DELETE /api/schedules/:id` |
+| `enableSchedule` / `disableSchedule` | `POST /api/schedules/:id/enable|disable` |
+| `runScheduleNow` | `POST /api/schedules/:id/run` |
+| `listScheduleRuns` | `GET /api/schedules/:id/runs` |
+| `generateScheduleToken` | `POST /api/schedules/:id/tokens` |
+| `revokeScheduleToken` | `DELETE /api/schedules/:id/tokens` |
 
 ### Routes (`src/App.tsx`)
 
@@ -369,7 +492,11 @@ Create/edit form with:
 
 ### `ScheduleDetailPage`
 
-Shows schedule metadata, "Run now" button (calls `runScheduleNow` → navigates to `/?task=<id>`), and a run history table. Each row links to `/?task=<run_id>` to open the session in the chat view.
+Shows schedule metadata, "Run now" button (calls `runScheduleNow` → navigates to `/?task=<id>`), and:
+
+**Token management section**: "Generate fire token" button → calls `generateScheduleToken` → displays raw token in a one-time copyable alert with a pre-filled curl snippet. "Revoke token" button (always visible) → calls `revokeScheduleToken`.
+
+**Run history table** gains a `run_outcome` badge column: `completed` (green), `failed` (red), `timeout` (yellow), empty = in-progress or manually created task.
 
 ### `src/lib/cron.ts`
 
@@ -394,6 +521,10 @@ Shows schedule metadata, "Run now" button (calls `runScheduleNow` → navigates 
 | 4 | For `@once` schedules: `enabled` is set to `false` after firing, and the cron entry removes itself. The record remains for history. |
 | 5 | `discardResponseWriter` ensures the proxy's SSE output (which contains session tracking and OFS writes) runs to completion without requiring a real HTTP client. |
 | 6 | `context.Background()` is used for the goroutine, not the fire-call context, so sandbox provisioning survives beyond the cron tick's goroutine lifetime. |
+| 7 | A schedule token is scoped to exactly one schedule. The fire endpoint verifies both the token hash and the schedule ID in the path. |
+| 8 | Raw tokens are never stored; only `sha256(token)` is persisted. Only one active token per schedule at a time — `GenerateToken` revokes any existing active token. |
+| 9 | `run_outcome` is write-once per task. The first terminal state (`completed`/`failed`/`timeout`) wins; subsequent writes are no-ops. Manually created tasks never have `run_outcome` set. |
+| 10 | Disabled schedules return `409 Conflict` (not `404`) on fire requests so callers can distinguish "paused" from "not found". |
 
 ---
 

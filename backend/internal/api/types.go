@@ -122,10 +122,21 @@ type scheduleRunResponse struct {
 }
 
 type runListItem struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	State     string    `json:"state"`
-	ErrorMsg  string    `json:"error_msg,omitempty"`
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	State      string    `json:"state"`
+	ErrorMsg   string    `json:"error_msg,omitempty"`
+	RunOutcome string    `json:"run_outcome,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type generateTokenResponse struct {
+	TokenID   string    `json:"token_id"`
+	RawToken  string    `json:"raw_token"`
 	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type fireScheduleRequest struct {
+	Text string `json:"text"`
 }

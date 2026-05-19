@@ -39,6 +39,12 @@ type OFSClient interface {
 	// entry is the complete JSON object as stored on disk; no fields are dropped.
 	// Entries with isMeta:true are excluded.
 	GetHistory(ctx context.Context, key string) ([]json.RawMessage, error)
+	// GetHistoryPage returns entries for a window of part files and the cursor to
+	// fetch the next-older window. cursor="" requests the newest window.
+	// cursor=<partFileKey> requests the window of files strictly older than that key.
+	// nextCursor="" means no older files exist.
+	// Each window contains at most historyPageSize part files (≈ historyPageSize/2 turns).
+	GetHistoryPage(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
 	GetSessionMeta(ctx context.Context, username, taskID string) (*SessionMeta, error)
 	DeleteHistory(ctx context.Context, username, taskID string) error
 }
@@ -203,6 +209,92 @@ func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]json.R
 		entries = append(entries, part...)
 	}
 	return entries, nil
+}
+
+// historyPageSize is the number of part files returned per GetHistoryPage call.
+// Each turn produces exactly 2 part files (content + last-prompt meta), so
+// historyPageSize=2 loads one turn per page.
+const historyPageSize = 2
+
+// GetHistoryPage returns entries for a window of part files and the cursor to
+// fetch the next-older window.
+//
+// cursor="" → newest historyPageSize part files.
+// cursor=<partFileKey> → historyPageSize part files strictly older than that key.
+// nextCursor="" means no older files exist.
+//
+// Only the files in the requested window are downloaded; the key list is obtained
+// with a single cheap ListObjectsV2 scan.
+func (c *Client) GetHistoryPage(ctx context.Context, username, taskID, cursor string) ([]json.RawMessage, string, error) {
+	cwd := fmt.Sprintf("/workspace/%s/%s", username, taskID)
+	prefix := fmt.Sprintf("%s/history/%s/", username, encodeCWD(cwd))
+
+	// Collect all part file keys across all sessions under the task prefix.
+	var allKeys []string
+	paginator := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.volume),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, "", fmt.Errorf("listing history under %q: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			base := path.Base(key)
+			if strings.HasSuffix(base, ".ndjson") || strings.HasSuffix(base, ".jsonl") {
+				allKeys = append(allKeys, key)
+			}
+		}
+	}
+
+	if len(allKeys) == 0 {
+		return nil, "", nil
+	}
+
+	// Part file names begin with a 13-digit epoch; lexicographic sort = chronological.
+	sort.Strings(allKeys)
+	n := len(allKeys)
+
+	// Determine the window end: the index just before the cursor key (exclusive),
+	// or n (end of list) when no cursor is given.
+	end := n
+	if cursor != "" {
+		found := false
+		for i, k := range allKeys {
+			if k == cursor {
+				end = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", nil
+		}
+	}
+
+	start := end - historyPageSize
+	if start < 0 {
+		start = 0
+	}
+
+	window := allKeys[start:end]
+
+	var entries []json.RawMessage
+	for _, key := range window {
+		part, err := c.readPart(ctx, key)
+		if err != nil {
+			return nil, "", err
+		}
+		entries = append(entries, part...)
+	}
+
+	nextCursor := ""
+	if start > 0 {
+		nextCursor = allKeys[start]
+	}
+	return entries, nextCursor, nil
 }
 
 // readPart downloads a single .ndjson part file and returns each line as a raw

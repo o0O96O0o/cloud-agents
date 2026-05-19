@@ -168,6 +168,9 @@ func (o *redisTaskOps) persistSessionID(sessionID string) bool {
 // persistTitle is a no-op for RedisRepository; title durability requires MySQLRepository.
 func (o *redisTaskOps) persistTitle(_ string) {}
 
+// persistRunOutcome is a no-op for RedisRepository; outcome durability requires MySQLRepository.
+func (o *redisTaskOps) persistRunOutcome(_ string) {}
+
 func (o *redisTaskOps) ensureProvisioned(fn func() error) error {
 	ctx := context.Background()
 	return o.withLock(ctx, 30*time.Second, func() error {

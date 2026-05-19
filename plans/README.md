@@ -4,6 +4,8 @@ New product platform built on top of OpenSandbox. First feature: chat with a Cla
 
 ## Active
 
+- [session-store-interface.md](./session-store-interface.md) — SessionStore interface abstracting history retrieval; OFS S3 client as first implementation
+
 - [stream-input-and-file-upload.md](./stream-input-and-file-upload.md) — Steering messages into active runs + image file attachments while prompting
 - [overview.md](./overview.md) — Architecture, flow, repo layout, shared API contract
 - [frontend.md](./frontend.md) — Vite+React+shadcn frontend: step-by-step
@@ -15,6 +17,7 @@ New product platform built on top of OpenSandbox. First feature: chat with a Cla
 ## Archived (implemented)
 
 See [archived/](./archived/) for completed plans:
+- `schedule-api-trigger-and-run-outcome.md` — Per-schedule fire tokens (API trigger) + run outcome tracking (completed/failed/timeout)
 - `handler-decomposition.md` — Monolithic Handler split into TaskHandler, ResourceHandler, WorkspaceHandler, UserHandler + UserRepository interface
 - `gin-migration.md` — net/http → Gin migration
 - `backend.md` — Go backend reference

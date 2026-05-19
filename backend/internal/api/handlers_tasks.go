@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/l-lab/cloud-agents/internal/auth"
 	"github.com/l-lab/cloud-agents/internal/sandbox"
+	"github.com/l-lab/cloud-agents/internal/session"
 	"github.com/l-lab/cloud-agents/internal/task"
 	"github.com/l-lab/cloud-agents/pkg/logger"
 )
@@ -37,19 +38,21 @@ func repoNameFromGitURL(u string) string {
 
 // TaskHandler serves the tasks REST API.
 type TaskHandler struct {
-	store     TaskStore
-	manager   SandboxManager
-	proxy     MessageProxy
-	fileStore FileStore
+	store        TaskStore
+	manager      SandboxManager
+	proxy        MessageProxy
+	fileStore    FileStore         // GetSessionMeta, DeleteHistory
+	sessionStore session.SessionStore // GetHistory
 }
 
 // NewTaskHandler constructs a TaskHandler from its dependencies.
-func NewTaskHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy, fileStore FileStore) *TaskHandler {
+func NewTaskHandler(store TaskStore, mgr SandboxManager, proxy MessageProxy, fileStore FileStore, sessionStore session.SessionStore) *TaskHandler {
 	return &TaskHandler{
-		store:     store,
-		manager:   mgr,
-		proxy:     proxy,
-		fileStore: fileStore,
+		store:        store,
+		manager:      mgr,
+		proxy:        proxy,
+		fileStore:    fileStore,
+		sessionStore: sessionStore,
 	}
 }
 
@@ -273,8 +276,10 @@ func (h *TaskHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
+	log.Info("streaming message", "session_id", t.GetSessionID(), "sandbox_id", t.GetSandboxID())
 	if err := h.proxy.StreamMessage(c.Request.Context(), t, promptText, contentBlocks, permissionMode, c.Writer); err != nil {
 		if c.Request.Context().Err() != nil {
+			log.Info("client disconnected before/during stream", "err", err)
 			return
 		}
 		log.Error("stream error", "err", err)
@@ -438,14 +443,20 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	c.Writer.WriteHeaderNow()
 }
 
+type historyPageResponse struct {
+	Entries    []json.RawMessage `json:"entries"`
+	NextCursor string            `json:"nextCursor"`
+}
+
 // GetTaskHistory handles GET /api/tasks/:id/history.
 //
-// @Summary      Get task conversation history
-// @Description  Retrieve the conversation history for a task. Requires fileStore to be configured.
+// @Summary      Get task conversation history (paginated)
+// @Description  Returns the newest window of part-file entries (1 conversation turn). Pass the returned nextCursor as ?cursor= to fetch the next older turn. nextCursor="" means no more history.
 // @Tags         tasks
 // @Produce      json
-// @Param        id   path      string  true  "Task ID"
-// @Success      200  {array}   object  "Raw session entries"
+// @Param        id      path   string  true   "Task ID"
+// @Param        cursor  query  string  false  "Pagination cursor: S3 key of the oldest part file already fetched (omit for newest window)"
+// @Success      200  {object}  historyPageResponse
 // @Failure      404  {string}  string  "task not found"
 // @Failure      500  {string}  string  "failed to get history"
 // @Failure      503  {string}  string  "history storage not configured"
@@ -469,36 +480,25 @@ func (h *TaskHandler) GetTaskHistory(c *gin.Context) {
 		return
 	}
 
-	if h.fileStore == nil {
+	if h.sessionStore == nil {
 		log.Warn("history storage not configured")
 		c.String(http.StatusServiceUnavailable, "history storage not configured")
 		return
 	}
 
-	log.Info("listing history sessions", "username", t.Username)
-	keys, err := h.fileStore.ListHistory(c.Request.Context(), t.Username, id)
+	cursor := c.Query("cursor")
+	entries, nextCursor, err := h.sessionStore.GetHistory(c.Request.Context(), t.Username, id, cursor)
 	if err != nil {
-		log.Error("failed to list history sessions", "err", err)
-		c.String(http.StatusInternalServerError, "failed to list history")
+		log.Error("failed to get history", "err", err)
+		c.String(http.StatusInternalServerError, "failed to get history")
 		return
 	}
-	log.Info("found sessions", "session_count", len(keys))
-
-	entries := make([]json.RawMessage, 0)
-	for _, key := range keys {
-		log.Info("reading session parts", "session_prefix", key)
-		part, err := h.fileStore.GetHistory(c.Request.Context(), key)
-		if err != nil {
-			log.Error("failed to read session parts", "session_prefix", key, "err", err)
-			c.String(http.StatusInternalServerError, "failed to get history")
-			return
-		}
-		log.Info("read session parts", "session_prefix", key, "entry_count", len(part))
-		entries = append(entries, part...)
+	if entries == nil {
+		entries = []json.RawMessage{}
 	}
 
-	log.Info("returning history", "total_entries", len(entries))
-	c.JSON(http.StatusOK, entries)
+	log.Info("returning history", "total_entries", len(entries), "has_more", nextCursor != "")
+	c.JSON(http.StatusOK, historyPageResponse{Entries: entries, NextCursor: nextCursor})
 }
 
 // RespondToPermission handles POST /api/tasks/:id/permissions.

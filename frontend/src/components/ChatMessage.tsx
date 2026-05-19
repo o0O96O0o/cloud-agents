@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
+import { AlertCircle, Bot, ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { cn } from '@/lib/utils'
@@ -72,6 +72,51 @@ function ToolUseCard({ block }: { block: ToolUseBlock }) {
           </pre>
         )}
       </div>
+    </div>
+  )
+}
+
+function SubagentTraceCard({ block }: { block: ToolUseBlock }) {
+  const trace = block.subagentTrace
+  const [expanded, setExpanded] = useState(false)
+
+  if (!trace) return <ToolUseCard block={block} />
+
+  return (
+    <div className="rounded-lg border border-violet-200 bg-violet-50 overflow-hidden text-xs">
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 bg-violet-100 border-b border-violet-200 text-violet-800 hover:bg-violet-200"
+      >
+        <Bot className="h-3 w-3 flex-shrink-0" />
+        <span className="font-semibold">{trace.agentType || 'Agent'}</span>
+        {trace.description && (
+          <span className="text-violet-600 truncate ml-1 font-normal">{trace.description}</span>
+        )}
+        <ChevronRight className={cn('h-3 w-3 ml-auto flex-shrink-0 transition-transform', expanded && 'rotate-90')} />
+      </button>
+      {trace.summary && (
+        <p className="px-2.5 py-1.5 text-violet-700 text-[11px]">{trace.summary}</p>
+      )}
+      {expanded && trace.messages.length > 0 && (
+        <div className="border-t border-violet-200 divide-y divide-violet-100">
+          {trace.messages.map(m => (
+            <div key={m.id} className="px-2.5 py-1.5 space-y-1">
+              {m.toolUseBlocks?.map(tb => (
+                <p key={tb.id} className="font-mono text-[11px] text-violet-500">→ {tb.name}</p>
+              ))}
+              {m.text && (
+                <p className="text-[11px] text-neutral-600 whitespace-pre-wrap">{m.text}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {trace.totalTokens !== undefined && (
+        <p className="px-2.5 py-1 text-violet-400 text-[11px] border-t border-violet-100">
+          {trace.totalTokens.toLocaleString()} tokens
+        </p>
+      )}
     </div>
   )
 }
@@ -329,15 +374,21 @@ export function ChatMessage({ message, onApprovePermission, onAnswerQuestion }: 
               </div>
             ))}
 
+            {message.isCompactSummary && (
+              <p className="text-[11px] text-neutral-400 italic mb-1.5">↯ Context compacted</p>
+            )}
+
             {message.thinkingBlocks && message.thinkingBlocks.length > 0 && (
               <ThinkingCard blocks={message.thinkingBlocks} />
             )}
 
-            {message.toolUseBlocks && message.toolUseBlocks.some(b => b.name !== 'Agent') && (
+            {message.toolUseBlocks && message.toolUseBlocks.length > 0 && (
               <div className="mb-2 space-y-1.5">
-                {message.toolUseBlocks
-                  .filter(b => b.name !== 'Agent')
-                  .map((block) => <ToolUseCard key={block.id} block={block} />)}
+                {message.toolUseBlocks.map(block =>
+                  block.name === 'Agent'
+                    ? <SubagentTraceCard key={block.id} block={block} />
+                    : <ToolUseCard key={block.id} block={block} />
+                )}
               </div>
             )}
 

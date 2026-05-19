@@ -29,6 +29,7 @@ type TaskSummary struct {
 	GitURL     string
 	ErrorMsg   string
 	ScheduleID string
+	RunOutcome string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -49,4 +50,6 @@ type taskOps interface {
 	resetIfExpired(isAlive func(string) (bool, error)) (bool, error)
 	resetForReprovisioning()
 	persistTitle(title string)
+	// persistRunOutcome writes run_outcome only if currently empty (write-once).
+	persistRunOutcome(outcome string)
 }

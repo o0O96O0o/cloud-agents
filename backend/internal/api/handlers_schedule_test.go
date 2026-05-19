@@ -126,6 +126,31 @@ func (m *mockScheduleStore) Toggle(_ context.Context, id string, userID uint, en
 	return nil
 }
 
+func (m *mockScheduleStore) GenerateToken(_ context.Context, scheduleID string, userID uint) (string, *db.ScheduleToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.records[scheduleID]
+	if !ok || rec.UserID != userID {
+		return "", nil, schedule.ErrNotFound
+	}
+	tok := &db.ScheduleToken{ID: "tok-1", ScheduleID: scheduleID, TokenHash: "hash"}
+	return "rawtoken123", tok, nil
+}
+
+func (m *mockScheduleStore) RevokeToken(_ context.Context, scheduleID string, userID uint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.records[scheduleID]
+	if !ok || rec.UserID != userID {
+		return schedule.ErrNotFound
+	}
+	return nil
+}
+
+func (m *mockScheduleStore) LookupScheduleByToken(_ context.Context, _ string) (*db.ScheduledTask, error) {
+	return nil, errors.New("not implemented in mock")
+}
+
 // seed adds a schedule record directly (for test setup).
 func (m *mockScheduleStore) seed(rec *db.ScheduledTask) {
 	m.mu.Lock()
@@ -149,7 +174,7 @@ func scheduleCtx(req *http.Request) (*gin.Context, *httptest.ResponseRecorder) {
 // ---- handler constructor ----
 
 func newScheduleHandler(store *mockScheduleStore, tasks *mockStore) *ScheduleHandler {
-	return NewScheduleHandler(store, tasks, &mockManager{}, &mockProxy{})
+	return NewScheduleHandler(store, tasks, &mockManager{}, &mockProxy{}, nil)
 }
 
 // ---- ListSchedules ----

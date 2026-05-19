@@ -89,7 +89,7 @@ func TestRunFire_CreatesTaskAndRuns(t *testing.T) {
 	}
 
 	svc := newMockTaskSvc()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestRunFire_UpdatesLastRunAt(t *testing.T) {
 
 	svc := newMockTaskSvc()
 	before := time.Now()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 	svc.waitDone(t)
@@ -148,7 +148,7 @@ func TestRunFire_OnceSetsEnabledFalse(t *testing.T) {
 	g.Create(rec)
 
 	svc := newMockTaskSvc()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 	svc.waitDone(t)
@@ -185,7 +185,7 @@ func TestRunFire_ConcurrencySkip(t *testing.T) {
 	g.Create(activeTask)
 
 	svc := newMockTaskSvc()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestRunFire_ConcurrencyAllow(t *testing.T) {
 	g.Create(activeTask)
 
 	svc := newMockTaskSvc()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 	svc.waitDone(t)
@@ -248,7 +248,7 @@ func TestRunFire_DisabledScheduleErrors(t *testing.T) {
 	g.Exec("UPDATE scheduled_tasks SET enabled = 0 WHERE id = ?", rec.ID)
 
 	svc := newMockTaskSvc()
-	err := runFire(context.Background(), g, svc, rec.ID)
+	_, err := RunFire(context.Background(), g, svc, rec.ID, "")
 	if err == nil {
 		t.Fatal("expected error when schedule is disabled (not found in query)")
 	}
@@ -267,7 +267,7 @@ func TestRunFire_AutoTitleFallsBackToID(t *testing.T) {
 	g.Create(rec)
 
 	svc := newMockTaskSvc()
-	if err := runFire(context.Background(), g, svc, rec.ID); err != nil {
+	if _, err := RunFire(context.Background(), g, svc, rec.ID, ""); err != nil {
 		t.Fatalf("runFire: %v", err)
 	}
 	svc.waitDone(t)

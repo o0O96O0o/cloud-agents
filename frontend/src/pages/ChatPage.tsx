@@ -10,7 +10,6 @@ import { WorkspacePanel } from '@/components/WorkspacePanel'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChat } from '@/hooks/useChat'
 import { createTask, deleteTask, getHistory, getTask, getUserSettings, listTasks, updateUserSettings } from '@/api/client'
 import type { TaskSummary } from '@/api/client'
@@ -30,7 +29,7 @@ export function ChatPage() {
     setRefreshToken(t => t + 1)
   }, [])
 
-  const { messages, taskId, cwd, sandboxState, sending, sendMessage, approvePermission, answerQuestion, newChat, loadTask, startTask } =
+  const { messages, taskId, cwd, sandboxState, sending, hasMoreHistory, loadingMoreHistory, sendMessage, approvePermission, answerQuestion, newChat, loadTask, loadMoreHistory, startTask } =
     useChat(username, handleSessionCompleted)
 
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -40,6 +39,9 @@ export function ChatPage() {
   const [resizing, setResizing] = useState(false)
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+  const prevScrollHeightRef = useRef(0)
+  const skipScrollToBottomRef = useRef(false)
 
   const [hasAnthropicKey, setHasAnthropicKey] = useState<boolean | null>(null)
   const [keyDialogOpen, setKeyDialogOpen] = useState(false)
@@ -105,18 +107,37 @@ export function ChatPage() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    const el = chatScrollRef.current
+    if (el && prevScrollHeightRef.current > 0) {
+      // Restore scroll after prepending older history
+      el.scrollTop = el.scrollHeight - prevScrollHeightRef.current
+      prevScrollHeightRef.current = 0
+      return
+    }
+    if (skipScrollToBottomRef.current) {
+      skipScrollToBottomRef.current = false
+      return
+    }
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
   const handleSelectTask = useCallback(async (id: string) => {
     try {
-      const [entries, task] = await Promise.all([getHistory(id), getTask(id)])
-      const msgs = buildMessages(entries)
-      loadTask(id, msgs, task.cwd)
+      const [page, task] = await Promise.all([getHistory(id), getTask(id)])
+      const msgs = buildMessages(page.entries)
+      loadTask(id, msgs, task.cwd, page.nextCursor)
     } catch {
       // silently ignore — history unavailable for this task
     }
   }, [loadTask])
+
+  const handleLoadMoreHistory = useCallback(async () => {
+    const el = chatScrollRef.current
+    if (el) prevScrollHeightRef.current = el.scrollHeight
+    skipScrollToBottomRef.current = true
+    await loadMoreHistory()
+  }, [loadMoreHistory])
+
 
   const handleNewChat = useCallback(() => {
     setDialogOpen(true)
@@ -263,8 +284,21 @@ export function ChatPage() {
           </div>
         </header>
 
-        <ScrollArea className="flex-1">
+        <div ref={chatScrollRef} className="flex-1 overflow-y-auto">
           <div className="p-4 space-y-4">
+            {hasMoreHistory && (
+              <div className="flex justify-center py-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLoadMoreHistory}
+                  disabled={loadingMoreHistory}
+                  className="text-xs text-neutral-500"
+                >
+                  {loadingMoreHistory ? 'Loading…' : 'Load more'}
+                </Button>
+              </div>
+            )}
             {messages.length === 0 ? (
               <div className="flex items-center justify-center h-full min-h-[60dvh]">
                 <p className="text-neutral-400 text-sm">What can I help you with?</p>
@@ -281,7 +315,7 @@ export function ChatPage() {
             )}
             <div ref={bottomRef} />
           </div>
-        </ScrollArea>
+        </div>
 
         <ChatInput onSend={handleSend} isSteering={sending} />
       </div>

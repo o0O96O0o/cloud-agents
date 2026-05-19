@@ -83,6 +83,8 @@ func (p *Proxy) StreamMessage(ctx context.Context, t *task.Task, prompt string, 
 		upstreamURL = proxyBaseURL + "/sessions/" + sessionID + "/messages"
 	}
 
+	logger.Default().Info("streaming message", "task_id", t.ID, "session_id", sessionID, "new_session", isNew, "url", upstreamURL)
+
 	opts := agentQueryOptions{
 		CWD:            fmt.Sprintf("/workspace/%s/%s", t.Username, t.ID),
 		PermissionMode: permissionMode,

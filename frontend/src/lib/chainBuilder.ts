@@ -1,6 +1,41 @@
 import type { AgentMetadataEntry, SessionEntry, UserEntry, AssistantEntry } from '@/types/session'
 import type { Message, AnsweredQuestion, SubagentMessage, SubagentTrace, ThinkingBlock, ToolUseBlock } from '@/types'
 
+// Walk the parentUuid tree to extract the main conversation chain.
+// Algorithm mirrors the Python SDK's _build_conversation_chain:
+//   1. Index entries by uuid
+//   2. Find leaves (uuid not referenced as any entry's parentUuid)
+//   3. Filter to main-chain only (not sidechain, not teamName, not isMeta)
+//   4. Pick the last (newest) leaf
+//   5. Walk backward via parentUuid to root
+//   6. Reverse to chronological order
+function buildMainChain(entries: (UserEntry | AssistantEntry)[]): (UserEntry | AssistantEntry)[] {
+  if (entries.length === 0) return []
+
+  const eligible = entries.filter(e => !e.isSidechain && !e.teamName && !e.isMeta)
+  if (eligible.length === 0) return []
+
+  const byUuid = new Map<string, UserEntry | AssistantEntry>()
+  const referencedUuids = new Set<string>()
+  for (const e of eligible) {
+    byUuid.set(e.uuid, e)
+    if (e.parentUuid) referencedUuids.add(e.parentUuid)
+  }
+
+  const leaves = eligible.filter(e => !referencedUuids.has(e.uuid))
+  const leaf = leaves[leaves.length - 1]
+  if (!leaf) return eligible
+
+  const chain: (UserEntry | AssistantEntry)[] = []
+  let curr: UserEntry | AssistantEntry | undefined = leaf
+  while (curr) {
+    chain.push(curr)
+    curr = curr.parentUuid ? byUuid.get(curr.parentUuid) : undefined
+  }
+
+  return chain.reverse()
+}
+
 function userEntryToMessage(entry: UserEntry): Message {
   const content = entry.message.content
   let text = ''
@@ -59,6 +94,7 @@ function assistantEntryToMessage(
     toolUseBlocks,
     ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     ...(answeredQuestions.length > 0 ? { answeredQuestions } : {}),
+    ...(entry.isCompactSummary ? { isCompactSummary: true } : {}),
   }
 }
 
@@ -94,28 +130,28 @@ function buildSubagentMessages(entries: AssistantEntry[]): SubagentMessage[] {
 
 /** Convert raw session entries from the history API into renderable Message objects. */
 export function buildMessages(entries: SessionEntry[]): Message[] {
-  // ── Separate main chain from sidechain ──────────────────────────────────────
-  const mainEntries: (UserEntry | AssistantEntry)[] = []
+  // ── Separate main-chain candidates from sidechains ──────────────────────────
+  const allMainCandidates: (UserEntry | AssistantEntry)[] = []
   const sidechainGroups = new Map<string, AssistantEntry[]>()
 
   for (const entry of entries) {
     if (entry.type !== 'user' && entry.type !== 'assistant') continue
     const e = entry as UserEntry | AssistantEntry
     if (!e.isSidechain) {
-      mainEntries.push(e)
+      allMainCandidates.push(e)
     } else if (entry.type === 'assistant') {
       const ae = entry as AssistantEntry
       const id = ae.agentId
       if (id) {
         const group = sidechainGroups.get(id)
-        if (group) {
-          group.push(ae)
-        } else {
-          sidechainGroups.set(id, [ae])
-        }
+        if (group) group.push(ae)
+        else sidechainGroups.set(id, [ae])
       }
     }
   }
+
+  // ── Reconstruct main chain via parentUuid walk ──────────────────────────────
+  const mainEntries = buildMainChain(allMainCandidates)
 
   // ── Build Map<agentId, SubagentMessage[]> ───────────────────────────────────
   const sidechainMsgMap = new Map<string, SubagentMessage[]>()
@@ -178,7 +214,7 @@ export function buildMessages(entries: SessionEntry[]): Message[] {
     }
   }
 
-  // ── Build main messages (isSidechain: false only) ───────────────────────────
+  // ── Build main messages ──────────────────────────────────────────────────────
   return mainEntries
     .filter(e => {
       if (e.type === 'user') return !isToolResultOnlyEntry(e as UserEntry)

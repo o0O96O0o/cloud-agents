@@ -59,6 +59,7 @@ type Task struct {
 	errorMsg  string            // last error message; set when state transitions to StateError
 
 	scheduleID string // empty for manually-created tasks; immutable after creation
+	runOutcome string // "completed" | "failed" | "timeout" | "" (write-once, only for schedule-spawned tasks)
 
 	// provisionMu serialises provisioning and reset. Lock order: provisionMu → mu.
 	// Not used when ops != nil (Redis lock replaces it).
@@ -169,6 +170,21 @@ func (t *Task) SetTitle(title string) {
 	t.mu.Unlock()
 	if t.ops != nil {
 		t.ops.persistTitle(title)
+	}
+}
+
+// SetRunOutcome records the terminal outcome of a scheduled run. Write-once: the first
+// non-empty value wins; subsequent calls are ignored.
+func (t *Task) SetRunOutcome(outcome string) {
+	t.mu.Lock()
+	if t.runOutcome != "" {
+		t.mu.Unlock()
+		return
+	}
+	t.runOutcome = outcome
+	t.mu.Unlock()
+	if t.ops != nil {
+		t.ops.persistRunOutcome(outcome)
 	}
 }
 
@@ -385,6 +401,7 @@ func (r *MemoryRepository) List(_ context.Context, username string) ([]TaskSumma
 			Title:      t.title,
 			State:      t.computeStateStr(),
 			ScheduleID: t.scheduleID,
+			RunOutcome: t.runOutcome,
 		})
 		t.mu.RUnlock()
 	}
@@ -405,6 +422,7 @@ func (r *MemoryRepository) ListBySchedule(_ context.Context, scheduleID string) 
 			Title:      t.title,
 			State:      t.computeStateStr(),
 			ScheduleID: t.scheduleID,
+			RunOutcome: t.runOutcome,
 		})
 		t.mu.RUnlock()
 	}
