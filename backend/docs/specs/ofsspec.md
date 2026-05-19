@@ -170,18 +170,18 @@ Implemented in `internal/storage/client.go` using `aws-sdk-go-v2`. Initialised i
 type OFSClient interface {
     // ListHistory returns session prefixes for the given task.
     // Each prefix is "{username}/history/{encoded_cwd}/{session_id}/".
-    // Used internally; callers should prefer GetHistoryPage.
     ListHistory(ctx context.Context, username, taskID string) ([]string, error)
 
     // GetHistory downloads all part files under a session prefix and returns
     // their NDJSON entries. Entries with isMeta:true are excluded.
     GetHistory(ctx context.Context, sessionPrefix string) ([]json.RawMessage, error)
 
-    // GetHistoryPage returns entries for one session and the cursor for the
-    // next-older session. cursor="" requests the latest (most recent) session.
-    // nextCursor="" means no more history is available.
-    // Sessions are ranked newest-first by their highest part-file epoch timestamp.
-    GetHistoryPage(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
+    // GetAllHistory returns all NDJSON entries for the task across every session
+    // directory (main agent + subagent sessions). Part files are listed with a
+    // single ListObjectsV2 call and downloaded concurrently (up to 8 in parallel),
+    // merged in chronological part-file order. Entries with isMeta:true are excluded.
+    // The frontend reconstructs the conversation chain via parentUuid chaining.
+    GetAllHistory(ctx context.Context, username, taskID string) ([]json.RawMessage, error)
 
     // GetSessionMeta returns the agent process record for the given task by
     // scanning "{username}/.claude/sessions/" and matching on CWD.
@@ -207,37 +207,37 @@ func (c *Client) GetObjectBytes(ctx context.Context, key string) ([]byte, error)
 
 ```go
 type SessionStore interface {
-    GetHistory(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
+    // GetHistory returns all history entries for the task across every session
+    // directory (main agent + subagents). The frontend reconstructs the
+    // conversation chain via parentUuid.
+    GetHistory(ctx context.Context, username, taskID string) ([]json.RawMessage, error)
 }
 ```
 
 `OFSSessionStore` is the production implementation. `GET /api/tasks/:id/history` calls `SessionStore.GetHistory` — it never touches `OFSClient` directly.
 
-### Retrieving History for a Task (paginated)
+### Retrieving History for a Task
 
 ```go
-// First page — newest turn (2 part files)
-entries, nextCursor, err := sessionStore.GetHistory(ctx, username, taskID, "")
-
-// Subsequent pages — older turns
-for nextCursor != "" {
-    entries, nextCursor, err = sessionStore.GetHistory(ctx, username, taskID, nextCursor)
-}
+entries, err := sessionStore.GetHistory(ctx, username, taskID)
 ```
 
-The HTTP API exposes this via `GET /api/tasks/:id/history?cursor=<cursor>`:
+The HTTP API exposes this via `GET /api/tasks/:id/history`:
 
 ```json
 {
   "entries": [ ... ],
-  "nextCursor": "alice/history/-workspace-alice-task-abc/86613a9f-.../part-1778587171934-af0c9c.ndjson"
-  // nextCursor is "" when no older files exist
+  "nextCursor": ""
 }
 ```
 
-`GetHistoryPage` implementation: one `ListObjectsV2` pass collects all part-file keys (metadata only, no downloads). Keys are sorted lexicographically (= chronological order). The newest `historyPageSize` (2) keys are sliced; if a cursor is given, the 2 keys strictly older than that key are returned instead. Only the keys in the window are downloaded. The cursor is the S3 key of the **oldest** part file in the current page.
+`GetAllHistory` implementation:
+1. One `ListObjectsV2` pass collects **all** part-file keys under `{prefix}` (all session directories — main agent and subagents).
+2. Keys are sorted lexicographically (= chronological).
+3. All part files are downloaded concurrently (up to 8 goroutines), merged in sorted order.
+4. Entries with `isMeta:true` are excluded; all others are returned verbatim.
 
-Since tasks always have a single agent session, and the SDK flushes exactly 2 part files per user turn (one content file, one `last-prompt` meta file), a page of 2 part files = 1 conversation turn.
+The frontend reconstructs the conversation chain via `parentUuid` chaining (`chainBuilder.ts`). Subagent entries (`isSidechain:true`) are included in the response and attached to their corresponding `Agent` tool-use block by the frontend.
 
 ---
 

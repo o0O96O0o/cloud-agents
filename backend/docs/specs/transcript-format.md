@@ -102,20 +102,19 @@ Subagent entries (`isSidechain: true`) form a separate linear chain attached to 
 
 ---
 
-## History Pagination
+## History Loading
 
-Since a task always has a single session, pagination is by **part file** rather than by session.
+`GET /api/tasks/:id/history` returns **all** entries for the task in a single response:
 
-`GET /api/tasks/:id/history?cursor=<partFileKey>` returns at most `historyPageSize` part files (default 20, ≈ 10 turns):
+```json
+{
+  "entries": [ ... ],
+  "nextCursor": ""
+}
+```
 
-- `cursor=""` → the newest 2 part files (1 turn).
-- `cursor=<key>` → the 2 part files strictly older than `<key>` (1 more turn).
-- `nextCursor=""` means no older files exist.
+The backend lists every part file under `{username}/history/{encoded_cwd}/` (all session directories — main agent and subagents) with one `ListObjectsV2` call, then downloads them **concurrently** (up to 8 in parallel) and merges in chronological order. Entries with `isMeta:true` are excluded.
 
-The cursor is the S3 key of the **oldest** part file in the current page. Clients request older turns by passing the `nextCursor` value back as `cursor`.
-
-This means:
-- `ListObjectsV2` is called once per request (metadata only — no file downloads).
-- Only 2 part files are downloaded per page, regardless of total history size.
+The frontend's `chainBuilder.ts` reconstructs the visible conversation from the full entry set via `parentUuid` chaining, separating main-chain messages from subagent traces. No cursor or "Load More" is needed.
 
 See [`ofsspec.md`](ofsspec.md) for the full S3 key reference and storage client interface.

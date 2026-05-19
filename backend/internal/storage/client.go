@@ -16,6 +16,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/sync/errgroup"
 )
 
 type SessionMeta struct {
@@ -39,12 +40,11 @@ type OFSClient interface {
 	// entry is the complete JSON object as stored on disk; no fields are dropped.
 	// Entries with isMeta:true are excluded.
 	GetHistory(ctx context.Context, key string) ([]json.RawMessage, error)
-	// GetHistoryPage returns entries for a window of part files and the cursor to
-	// fetch the next-older window. cursor="" requests the newest window.
-	// cursor=<partFileKey> requests the window of files strictly older than that key.
-	// nextCursor="" means no older files exist.
-	// Each window contains at most historyPageSize part files (≈ historyPageSize/2 turns).
-	GetHistoryPage(ctx context.Context, username, taskID, cursor string) (entries []json.RawMessage, nextCursor string, err error)
+	// GetAllHistory returns all NDJSON entries across every session directory for
+	// the given task (main agent + all subagent sessions). Part files are downloaded
+	// concurrently and merged in chronological order. Entries with isMeta:true are
+	// excluded. The frontend reconstructs the conversation chain via parentUuid.
+	GetAllHistory(ctx context.Context, username, taskID string) ([]json.RawMessage, error)
 	GetSessionMeta(ctx context.Context, username, taskID string) (*SessionMeta, error)
 	DeleteHistory(ctx context.Context, username, taskID string) error
 }
@@ -211,25 +211,16 @@ func (c *Client) GetHistory(ctx context.Context, sessionPrefix string) ([]json.R
 	return entries, nil
 }
 
-// historyPageSize is the number of part files returned per GetHistoryPage call.
-// Each turn produces exactly 2 part files (content + last-prompt meta), so
-// historyPageSize=2 loads one turn per page.
-const historyPageSize = 2
-
-// GetHistoryPage returns entries for a window of part files and the cursor to
-// fetch the next-older window.
-//
-// cursor="" → newest historyPageSize part files.
-// cursor=<partFileKey> → historyPageSize part files strictly older than that key.
-// nextCursor="" means no older files exist.
-//
-// Only the files in the requested window are downloaded; the key list is obtained
-// with a single cheap ListObjectsV2 scan.
-func (c *Client) GetHistoryPage(ctx context.Context, username, taskID, cursor string) ([]json.RawMessage, string, error) {
+// GetAllHistory returns all NDJSON entries for the given task, across every
+// session directory (main agent and subagent sessions). Part files are listed
+// with a single ListObjectsV2 call, then downloaded concurrently (up to 8 in
+// parallel). Results are merged in chronological part-file order. Entries with
+// isMeta:true are excluded; all other fields are returned verbatim.
+// The frontend reconstructs the conversation chain via parentUuid.
+func (c *Client) GetAllHistory(ctx context.Context, username, taskID string) ([]json.RawMessage, error) {
 	cwd := fmt.Sprintf("/workspace/%s/%s", username, taskID)
 	prefix := fmt.Sprintf("%s/history/%s/", username, encodeCWD(cwd))
 
-	// Collect all part file keys across all sessions under the task prefix.
 	var allKeys []string
 	paginator := s3.NewListObjectsV2Paginator(c.s3, &s3.ListObjectsV2Input{
 		Bucket: aws.String(c.volume),
@@ -238,7 +229,7 @@ func (c *Client) GetHistoryPage(ctx context.Context, username, taskID, cursor st
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, "", fmt.Errorf("listing history under %q: %w", prefix, err)
+			return nil, fmt.Errorf("listing history under %q: %w", prefix, err)
 		}
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
@@ -250,51 +241,41 @@ func (c *Client) GetHistoryPage(ctx context.Context, username, taskID, cursor st
 	}
 
 	if len(allKeys) == 0 {
-		return nil, "", nil
+		return nil, nil
 	}
 
-	// Part file names begin with a 13-digit epoch; lexicographic sort = chronological.
 	sort.Strings(allKeys)
-	n := len(allKeys)
 
-	// Determine the window end: the index just before the cursor key (exclusive),
-	// or n (end of list) when no cursor is given.
-	end := n
-	if cursor != "" {
-		found := false
-		for i, k := range allKeys {
-			if k == cursor {
-				end = i
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, "", nil
-		}
+	// Download all part files concurrently, preserving order.
+	type result struct {
+		entries []json.RawMessage
+		err     error
 	}
+	results := make([]result, len(allKeys))
 
-	start := end - historyPageSize
-	if start < 0 {
-		start = 0
+	const maxConcurrent = 8
+	sem := make(chan struct{}, maxConcurrent)
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	for i, key := range allKeys {
+		i, key := i, key
+		sem <- struct{}{}
+		eg.Go(func() error {
+			defer func() { <-sem }()
+			entries, err := c.readPart(egCtx, key)
+			results[i] = result{entries: entries, err: err}
+			return err
+		})
 	}
-
-	window := allKeys[start:end]
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
 
 	var entries []json.RawMessage
-	for _, key := range window {
-		part, err := c.readPart(ctx, key)
-		if err != nil {
-			return nil, "", err
-		}
-		entries = append(entries, part...)
+	for _, r := range results {
+		entries = append(entries, r.entries...)
 	}
-
-	nextCursor := ""
-	if start > 0 {
-		nextCursor = allKeys[start]
-	}
-	return entries, nextCursor, nil
+	return entries, nil
 }
 
 // readPart downloads a single .ndjson part file and returns each line as a raw

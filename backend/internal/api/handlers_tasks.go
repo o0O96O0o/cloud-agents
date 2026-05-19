@@ -450,12 +450,11 @@ type historyPageResponse struct {
 
 // GetTaskHistory handles GET /api/tasks/:id/history.
 //
-// @Summary      Get task conversation history (paginated)
-// @Description  Returns the newest window of part-file entries (1 conversation turn). Pass the returned nextCursor as ?cursor= to fetch the next older turn. nextCursor="" means no more history.
+// @Summary      Get task conversation history
+// @Description  Returns all conversation history entries for the task (main agent + subagent sessions). The frontend reconstructs the visible chain via parentUuid chaining.
 // @Tags         tasks
 // @Produce      json
-// @Param        id      path   string  true   "Task ID"
-// @Param        cursor  query  string  false  "Pagination cursor: S3 key of the oldest part file already fetched (omit for newest window)"
+// @Param        id   path   string  true   "Task ID"
 // @Success      200  {object}  historyPageResponse
 // @Failure      404  {string}  string  "task not found"
 // @Failure      500  {string}  string  "failed to get history"
@@ -486,8 +485,7 @@ func (h *TaskHandler) GetTaskHistory(c *gin.Context) {
 		return
 	}
 
-	cursor := c.Query("cursor")
-	entries, nextCursor, err := h.sessionStore.GetHistory(c.Request.Context(), t.Username, id, cursor)
+	entries, err := h.sessionStore.GetHistory(c.Request.Context(), t.Username, id)
 	if err != nil {
 		log.Error("failed to get history", "err", err)
 		c.String(http.StatusInternalServerError, "failed to get history")
@@ -497,8 +495,8 @@ func (h *TaskHandler) GetTaskHistory(c *gin.Context) {
 		entries = []json.RawMessage{}
 	}
 
-	log.Info("returning history", "total_entries", len(entries), "has_more", nextCursor != "")
-	c.JSON(http.StatusOK, historyPageResponse{Entries: entries, NextCursor: nextCursor})
+	log.Info("returning history", "total_entries", len(entries))
+	c.JSON(http.StatusOK, historyPageResponse{Entries: entries, NextCursor: ""})
 }
 
 // RespondToPermission handles POST /api/tasks/:id/permissions.

@@ -17,10 +17,10 @@ func NewOFSSessionStore(client storage.OFSClient) *OFSSessionStore {
 	return &OFSSessionStore{client: client}
 }
 
-func (s *OFSSessionStore) GetHistory(ctx context.Context, username, taskID, cursor string) ([]json.RawMessage, string, error) {
-	entries, nextCursor, err := s.client.GetHistoryPage(ctx, username, taskID, cursor)
+func (s *OFSSessionStore) GetHistory(ctx context.Context, username, taskID string) ([]json.RawMessage, error) {
+	entries, err := s.client.GetAllHistory(ctx, username, taskID)
 	if err != nil {
-		return nil, "", fmt.Errorf("getting history page: %w", err)
+		return nil, fmt.Errorf("getting history: %w", err)
 	}
-	return entries, nextCursor, nil
+	return entries, nil
 }
