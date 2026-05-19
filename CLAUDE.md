@@ -99,22 +99,24 @@ OpenSandbox server (:8080)
 
 **Key packages:**
 
-| Package            | Responsibility                                                        |
-| ------------------ | --------------------------------------------------------------------- |
-| `internal/api`     | Gin router + HTTP handlers + request/response types                   |
-| `internal/task`    | Task state machine, repository interface, Memory/MySQL/Redis backends |
-| `internal/sandbox` | OpenSandbox lifecycle (create → poll → health-check) + SSE proxy      |
-| `internal/auth`    | HS256 JWT issue/verify, Bearer middleware, Gin context helpers        |
-| `internal/db`      | GORM models (User, Task), AutoMigrate, MySQL connection               |
-| `internal/oidc`    | go-oidc provider wrapper + CLI login flow                             |
-| `internal/sso`     | Didi SSO HTTP client + handlers                                       |
-| `internal/storage` | OFS (S3-compatible) client for conversation history                   |
-| `pkg/config`       | YAML config loader with defaults                                      |
+| Package              | Responsibility                                                        |
+| -------------------- | --------------------------------------------------------------------- |
+| `internal/api`       | Gin router + HTTP handlers + request/response types                   |
+| `internal/task`      | Task state machine, repository interface, Memory/MySQL/Redis backends |
+| `internal/sandbox`   | OpenSandbox lifecycle (create → poll → health-check) + SSE proxy      |
+| `internal/schedule`  | Cron scheduler, schedule CRUD service, per-schedule fire logic        |
+| `internal/auth`      | HS256 JWT issue/verify, Bearer middleware, Gin context helpers        |
+| `internal/crypto`    | AES-256-GCM encrypt/decrypt for per-user secrets (SSH key, API key)  |
+| `internal/db`        | GORM models (User, Task, ScheduledTask), AutoMigrate, MySQL connection |
+| `internal/oidc`      | go-oidc provider wrapper + CLI login flow                             |
+| `internal/sso`       | Didi SSO HTTP client + handlers                                       |
+| `internal/storage`   | OFS (S3-compatible) client for conversation history                   |
+| `pkg/config`         | YAML config loader with defaults                                      |
 
 **Task state machine:** `pending → provisioning → running`, with `error` on failure. The sandbox is created lazily on the first message via `EnsureProvisioned`, which holds a distributed Redis lock to prevent double-provisioning. `session_id` is write-once and never cleared, so history in OFS remains accessible after a sandbox expires.
 
 **Storage layout:**
-- **MySQL** — durable task fields (id, username, state, title, session_id, extra_env)
+- **MySQL** — durable task fields (id, username, state, title, session_id, extra_env, schedule_id) + `scheduled_tasks` table
 - **Redis** — ephemeral sandbox routing (`sandbox:{id}`) + distributed provisioning lock (`task-lock:{id}`)
 - **OFS (S3)** — NDJSON conversation history keyed by `TASK_ID`
 
@@ -126,18 +128,44 @@ OpenSandbox server (:8080)
 
 **Key files:**
 
-| File                  | Responsibility                                                   |
-| --------------------- | ---------------------------------------------------------------- |
-| `hooks/useChat.ts`    | Single source of truth: all chat state + SSE streaming logic     |
-| `api/client.ts`       | Thin fetch wrappers for the backend REST API                     |
-| `lib/chainBuilder.ts` | Converts `SessionEntry[]` (OFS history) → `Message[]` for replay |
-| `lib/auth.ts`         | JWT token management (localStorage)                              |
-| `pages/ChatPage.tsx`  | Two-column layout (sidebar + chat)                               |
-| `types/session.ts`    | Typed union for every NDJSON entry type                          |
+| File                          | Responsibility                                                        |
+| ----------------------------- | --------------------------------------------------------------------- |
+| `hooks/useChat.ts`            | Single source of truth: all chat state + SSE streaming logic          |
+| `api/client.ts`               | Thin fetch wrappers for the backend REST API                          |
+| `lib/chainBuilder.ts`         | Converts `SessionEntry[]` (OFS history) → `Message[]` for replay      |
+| `lib/auth.ts`                 | JWT token management (localStorage)                                   |
+| `pages/ChatPage.tsx`          | Resizable two-panel layout (collapsible sidebar + chat)               |
+| `pages/SchedulesPage.tsx`     | List of user schedules with enable/disable toggle                     |
+| `pages/ScheduleFormPage.tsx`  | Create/edit form for schedules (recurring cron or one-time)           |
+| `pages/ScheduleDetailPage.tsx`| Schedule detail + run history; links runs back to ChatPage            |
+| `types/session.ts`            | Typed union for every NDJSON entry type                               |
 
-**SSE flow:** `useChat.sendMessage` → creates task if needed → POST to backend → reads SSE body as stream via `parseSSE` async generator → dispatches events to update message state. `session.completed` (not `result`) is the terminal event that re-enables input.
+**Routes:**
 
-**History replay:** Clicking a task in the sidebar calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages)`, making the task immediately resumable.
+| Path | Component |
+|---|---|
+| `/` | `ChatPage` |
+| `/resources` | `ResourcesPage` |
+| `/settings` | `SettingsPage` |
+| `/schedules` | `SchedulesPage` |
+| `/schedules/new` | `ScheduleFormPage mode="create"` |
+| `/schedules/:id` | `ScheduleDetailPage` |
+| `/schedules/:id/edit` | `ScheduleFormPage mode="edit"` |
+| `/login` | `LoginPage` |
+| `/login/sso` | `SSOCallbackPage` |
+| `/login/oidc` | `SSOCallbackPage` |
+
+**SSE flow:** `useChat.sendMessage` → creates task if needed → POST to backend → reads SSE body as stream via `parseSSE` async generator → dispatches events to update message state. `session.completed` (not `result`) is the terminal event that re-enables input. When an SSE stream is already open (`sending === true`), subsequent `sendMessage` calls are routed to `POST /api/tasks/:id/steer` instead (steering), which injects the prompt into the active agent run without opening a new stream.
+
+**Key SSE events:** `session.init` (sets sessionId), `assistant` (text/tool chunks), `task.started` (pushes ToolActivity), `task.progress` (updates ToolActivity description + tool name), `user` (permission/question prompts), `session.completed` (terminal — re-enables input).
+
+**History replay:** Clicking a task in the sidebar calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages, cwd)`, making the task immediately resumable. `useChat` returns `{ messages, taskId, cwd, sandboxState, sending, sendMessage, approvePermission, answerQuestion, newChat, loadTask, startTask }`.
+
+**Message type** (`types.ts`): each message carries `thinkingBlocks?: ThinkingBlock[]`, `answeredQuestions?: AnsweredQuestion[]`, and `attachments?: { name: string; blob: Blob }[]` in addition to the core `content` and `toolUseBlocks`.
+
+**Subagent support:** `chainBuilder.ts` separates main-agent entries (`isSidechain: false`) from subagent entries (`isSidechain: true`), builds a `SubagentTrace` per subagent, and attaches it to the corresponding `Agent` tool-use block as `block.subagentTrace`. This data is available for UI rendering; `ChatMessage.tsx` currently filters Agent blocks from the standard tool-use display.
+
+**Sidebar schedule icon:** Tasks with a `schedule_id` show a `<Calendar>` icon in `HistorySidepanel` — but only when `git_url` is not also set (git-cloned tasks use the git icon instead).
 
 **Path alias:** `@/*` → `src/*`.
 

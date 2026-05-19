@@ -270,6 +270,6 @@ User data in OFS (`{username}/history/...` and `{username}/.claude/...`) is **no
 - [`ofsspec.md`](ofsspec.md) — OFS file layout and session history structure
 - [`resources.md`](resources.md) — User resources (skills/MCP): API, DB schema, OFS paths, sandbox injection
 - [`ssh-key-management.md`](ssh-key-management.md) — Per-user SSH key: encryption, API, sandbox injection
-- [`anthropic-key-management.md`](anthropic-key-management.md) — Per-user Anthropic API key: encryption, API, sandbox injection
+- [`anthropic-key-management.md`](anthropic-key-management.md) — Per-user Anthropic API key: encryption, API, sandbox injection (same infrastructure as SSH keys)
 - [`git-task-integration.md`](git-task-integration.md) — Optional git repository cloning at provision time (`git_url`, `error_msg`)
 - [`scheduled-tasks.md`](scheduled-tasks.md) — Scheduled task templates (`scheduled_tasks` table, `schedule_id` on tasks, cron runner)

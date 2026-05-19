@@ -303,6 +303,8 @@ schedule:
 
 Defaults: `enabled=true`, `max_concurrent=50`.
 
+> **Implementation note:** `max_concurrent` is defined in `ScheduleConfig` and loaded correctly, but the scheduler does not yet enforce it. The global cap on simultaneous schedule-triggered sandbox runs is not implemented. Per-schedule `concurrency=0` (skip-if-running) is enforced.
+
 When `enabled=false`, `NewScheduler` is still created and passed to `NewService` (for CRUD), but `Start` is never called so no cron entries run.
 
 ---

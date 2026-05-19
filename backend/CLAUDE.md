@@ -17,6 +17,8 @@ Before touching any backend code, read the relevant spec documents in `backend/d
 | [`docs/specs/configuration.md`](docs/specs/configuration.md) | Any change to config fields or YAML structure |
 | [`docs/specs/scheduled-tasks.md`](docs/specs/scheduled-tasks.md) | Any change to the cron scheduler, `scheduled_tasks` table, or `schedule_id` on tasks |
 | [`docs/specs/messaging.md`](docs/specs/messaging.md) | Any change to `/messages`, `/steer`, file attachments, content blocks, or the proxy layer |
+| [`docs/specs/ssh-key-management.md`](docs/specs/ssh-key-management.md) | Any change to SSH key storage, encryption, or sandbox injection |
+| [`docs/specs/anthropic-key-management.md`](docs/specs/anthropic-key-management.md) | Any change to per-user Anthropic API key storage or sandbox injection |
 
 ## Commands
 

@@ -18,7 +18,7 @@ Managed by GORM `AutoMigrate` on startup. Schema:
 
 | Column | Go type | Notes |
 |---|---|---|
-| `id` | `string` (36) | UUID; primary key; immutable |
+| `id` | `string` (12) | 12-char lowercase hex short ID; primary key; immutable. GORM column declared `size:36` (oversized but harmless). |
 | `username` | `string` (100) | Task owner; immutable; indexed |
 | `state` | `int` | Sandbox liveness state (see below) |
 | `title` | `string` (255) | Set after first session completes; initially empty |
