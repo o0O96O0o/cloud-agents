@@ -62,11 +62,12 @@ All chat state lives here. Returns:
 | ----------------------- | -------------------------------------------------------------------- |
 | `session.init`          | `sandboxState → 'running'`; stores `cwd`; if count > 0 (steer), creates a new assistant bubble |
 | `message.assistant`     | Appends `data.text` delta; collects `tool_use` blocks                |
+| `message.user`          | Reads `tool_result` blocks from `data.message.content`; matches each by `tool_use_id` and sets `ToolUseBlock.result` on the active message |
 | `permission.requested`  | Sets `status: 'requesting'`, attaches `permissionRequest` to message |
 | `question.asked`        | Sets `status: 'asking'`, attaches `pendingQuestions` to message      |
 | `session.status` (idle) | Sets `status: 'done'`                                                |
 | `task.started`          | Pushes a new `ToolActivity{done: false}`                             |
-| `task.progress`         | Updates last `ToolActivity` description + tool name                  |
+| `task.progress`         | Updates last `ToolActivity` description (`data.description`) + tool name (`data.lastToolName`) |
 | `result`                | Sets `status: 'done'`; aborted empty runs (`isError + aborted_streaming + no content`) are removed |
 | `session.completed`     | Marks all tool activities `done`, clears `sending`, calls `onSessionCompleted` |
 | `error`                 | Sets `status: 'error'`, `sandboxState → 'error'`                     |

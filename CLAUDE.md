@@ -135,7 +135,7 @@ OpenSandbox server (:8080)
 | `api/client.ts`               | Thin fetch wrappers for the backend REST API                          |
 | `lib/chainBuilder.ts`         | Converts `SessionEntry[]` (OFS history) → `Message[]` for replay      |
 | `lib/auth.ts`                 | JWT token management (localStorage)                                   |
-| `pages/ChatPage.tsx`          | Resizable two-panel layout (collapsible sidebar + chat)               |
+| `pages/ChatPage.tsx`          | Three-column resizable layout: sidebar | chat | workspace panel        |
 | `pages/SchedulesPage.tsx`     | List of user schedules with enable/disable toggle                     |
 | `pages/ScheduleFormPage.tsx`  | Create/edit form for schedules (recurring cron or one-time)           |
 | `pages/ScheduleDetailPage.tsx`| Schedule detail + run history; links runs back to ChatPage            |
@@ -158,11 +158,11 @@ OpenSandbox server (:8080)
 
 **SSE flow:** `useChat.sendMessage` → creates task if needed → POST to backend → reads SSE body as stream via `parseSSE` async generator → dispatches events to update message state. `session.completed` (not `result`) is the terminal event that re-enables input. When an SSE stream is already open (`sending === true`), subsequent `sendMessage` calls are routed to `POST /api/tasks/:id/steer` instead (steering), which injects the prompt into the active agent run without opening a new stream.
 
-**Key SSE events:** `session.init` (sets sessionId), `assistant` (text/tool chunks), `task.started` (pushes ToolActivity), `task.progress` (updates ToolActivity description + tool name), `user` (permission/question prompts), `session.completed` (terminal — re-enables input).
+**Key SSE events:** `session.init` (sets cwd, transitions sandbox to running), `message.assistant` (text delta + tool_use blocks), `message.user` (tool_result blocks — updates matching ToolUseBlock.result), `task.started` (appends ToolActivity), `task.progress` (updates last ToolActivity description + `lastToolName`), `permission.requested` (tool permission prompt), `question.asked` (AskUserQuestion prompt), `result` (run complete), `session.completed` (terminal — clears sending, calls onSessionCompleted).
 
-**History replay:** Clicking a task in the sidebar calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages, cwd)`, making the task immediately resumable. `useChat` returns `{ messages, taskId, cwd, sandboxState, sending, sendMessage, approvePermission, answerQuestion, newChat, loadTask, startTask }`.
+**History replay:** Clicking a task in the sidebar calls `getHistory(id)` → `buildMessages(entries)` → `loadTask(id, messages, cwd)`, making the task immediately resumable. `useChat` returns `{ messages, taskId, cwd, sandboxState, sending, hasMoreHistory, loadingMoreHistory, sendMessage, approvePermission, answerQuestion, newChat, loadTask, loadMoreHistory, startTask }`.
 
-**Message type** (`types.ts`): each message carries `thinkingBlocks?: ThinkingBlock[]`, `answeredQuestions?: AnsweredQuestion[]`, and `attachments?: { name: string; blob: Blob }[]` in addition to the core `content` and `toolUseBlocks`.
+**Message type** (`types.ts`): each message carries `text`, `status`, `toolActivity?: ToolActivity[]`, `toolUseBlocks?: ToolUseBlock[]`, `thinkingBlocks?: ThinkingBlock[]`, `permissionRequest?`, `pendingQuestions?`, `answeredQuestions?`, `attachments?: { name: string; blob: Blob }[]`, and `isCompactSummary?`.
 
 **Subagent support:** `chainBuilder.ts` separates main-agent entries (`isSidechain: false`) from subagent entries (`isSidechain: true`), builds a `SubagentTrace` per subagent, and attaches it to the corresponding `Agent` tool-use block as `block.subagentTrace`. This data is available for UI rendering; `ChatMessage.tsx` currently filters Agent blocks from the standard tool-use display.
 
