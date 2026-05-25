@@ -39,6 +39,7 @@ erDiagram
         string  git_url          "optional; repo cloned at provision time"
         text    error_msg        "set when state=Error; clone failure detail"
         string  schedule_id      "nullable FK → scheduled_tasks.id; set for schedule-triggered runs"
+        string  run_outcome      "write-once; empty until runner finishes: completed|failed|timeout"
     }
 
     SCHEDULED_TASK {
@@ -105,6 +106,7 @@ KIND {
 │  tasks:  id │ user_id(FK) │ state │ title │ session_id │ extra_env │       │
 │             │ provisioned │ git_url (VARCHAR 512, nullable) │ error_msg     │
 │             │ (TEXT, nullable) │ schedule_id (VARCHAR 36, nullable, index) │
+│             │ run_outcome (VARCHAR 20, nullable, write-once) │              │
 │             │ created_at │ updated_at                                       │
 │  scheduled_tasks: id │ user_id(FK) │ title │ prompt │ cron_expr │          │
 │             │ run_at (nullable) │ extra_env │ git_url │ timeout_secs │      │

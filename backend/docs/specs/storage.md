@@ -18,13 +18,17 @@ Managed by GORM `AutoMigrate` on startup. Schema:
 
 | Column | Go type | Notes |
 |---|---|---|
-| `id` | `string` (12) | 12-char lowercase hex short ID; primary key; immutable. GORM column declared `size:36` (oversized but harmless). |
-| `username` | `string` (100) | Task owner; immutable; indexed |
+| `id` | `string` (36) | 12-char lowercase hex short ID; primary key; immutable. GORM column declared `size:36` (oversized but harmless). |
+| `user_id` | `uint` | FK → `users.id`; immutable; indexed. Owner resolved via JOIN at query time — `username` is not a stored column. |
 | `state` | `int` | Sandbox liveness state (see below) |
 | `title` | `string` (255) | Set after first session completes; initially empty |
 | `session_id` | `string` (36) | Write-once; never cleared once set (invariant 4) |
 | `extra_env` | `text` (JSON) | Per-task environment variables; set at creation; immutable |
 | `provisioned` | `bool` | Whether a sandbox has been successfully provisioned |
+| `git_url` | `string` (512) | Optional; repo URL cloned into sandbox at provision time. Empty string means no clone. |
+| `error_msg` | `text` | Set when `state=StateError`; holds clone stderr or other provisioning failure detail. |
+| `schedule_id` | `string` (36) | Nullable FK → `scheduled_tasks.id`; set when a schedule fires this task. Indexed. `""` is never written; null for manually created tasks. |
+| `run_outcome` | `string` (20) | Write-once terminal outcome set by the schedule runner: `"completed"`, `"failed"`, or `"timeout"`. Empty for in-progress or manually created tasks. |
 | `created_at` | `datetime` | Managed by GORM |
 | `updated_at` | `datetime` | Managed by GORM |
 

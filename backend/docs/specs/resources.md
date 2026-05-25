@@ -227,6 +227,23 @@ If an OFS write fails mid-sequence (step 4), the request returns 500 and the DB 
 
 ---
 
+### `GET /api/resources/:id/content` — Get skill SKILL.md content
+
+Returns the raw `SKILL.md` text for a skill resource. Only available for `kind == "skill"`.
+
+**Response:** `200 OK` with `Content-Type: text/plain; charset=utf-8` containing the SKILL.md body.
+
+**Error responses:**
+
+| Status | Condition |
+|---|---|
+| `400` | Resource exists but is not a `skill` |
+| `401` | Not authenticated |
+| `404` | Resource not found or owned by a different user |
+| `503` | OFS storage not configured |
+
+---
+
 ### `PUT /api/resources/:id` — Update a resource
 
 **Request body** (all fields optional):

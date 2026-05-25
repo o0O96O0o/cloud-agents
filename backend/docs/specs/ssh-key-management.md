@@ -136,6 +136,8 @@ Fields not present in the body are left unchanged.
 2. AES-256-GCM encrypt with `config.Security.SSHKeySecret`.
 3. `UPDATE users SET ssh_private_key_enc = ?`.
 
+**Success response:** `204 No Content`. No body is returned.
+
 **Error responses:**
 
 | Status | Body | Cause |

@@ -25,7 +25,7 @@ Content-Type: application/json
 
 {
   "prompt": "string",
-  "permissionMode": "default"|"acceptEdits"|"bypassPermissions"|"plan"|"dontAsk"|"auto"  // optional
+  "permissionMode": "default"|"acceptEdits"|"plan"|"dontAsk"|"auto"  // optional
 }
 ```
 

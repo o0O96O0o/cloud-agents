@@ -53,7 +53,7 @@ Returns boolean presence flags. Key material is never returned.
 
 Both `ssh_private_key` and `anthropic_api_key` may be sent in the same request body; either, both, or neither can be included.
 
-**Response:** `200` with the updated `UserSettingsResponse`.
+**Response:** `204 No Content`. No body is returned.
 
 ---
 
