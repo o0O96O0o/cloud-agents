@@ -178,11 +178,29 @@ Service.LookupScheduleByToken(ctx, rawToken)
 `Scheduler` owns the `robfig/cron.Cron` instance and a `map[scheduleID]cron.EntryID`.
 
 ```
-Start(ctx)  → SELECT all enabled schedules → register each → c.Start()
+Start(ctx)  → SELECT all enabled schedules → register each
+            → catchUpIfMissed(rec) for each (fires once if due is in the past)
+            → c.Start()
 Stop()      → c.Stop() (drains in-flight jobs)
 Reload(id)  → Remove(id) → re-read DB → register (no-op if not found or disabled)
 Remove(id)  → c.Remove(entryID); delete from map
 ```
+
+**Catch-up on boot.** `robfig/cron` only schedules future firings; if the
+process was down across a slot, that slot is silently dropped. To survive
+restarts, `Start` compares each schedule's persisted due time against `now`:
+
+- Recurring schedules: `NextRunAt` (advanced by `RunFire` after every tick).
+- One-shot schedules: `RunAt` (`onceSpec.Next` returns zero for past times, so
+  the cron runner would otherwise never trigger them after a restart).
+
+If the due time is in the past, `Start` launches **one** catch-up `fire(id)`
+goroutine — not one per missed slot. Agent runs are typically expensive and
+"today's data" oriented; firing N times in a burst would do more harm than good.
+`RunFire` then advances `NextRunAt` to the next future slot (or disables the
+record for `@once`), so the cron timer resumes normal cadence. Catch-up reuses
+the same `RunFire` path as a normal tick, so it inherits the per-schedule
+`Concurrency==0` skip-if-running guard.
 
 **Recurring schedules** are registered with `c.AddFunc(cronExpr, func() { fire(id) })`.
 
@@ -525,6 +543,7 @@ Shows schedule metadata, "Run now" button (calls `runScheduleNow` → navigates 
 | 8 | Raw tokens are never stored; only `sha256(token)` is persisted. Only one active token per schedule at a time — `GenerateToken` revokes any existing active token. |
 | 9 | `run_outcome` is write-once per task. The first terminal state (`completed`/`failed`/`timeout`) wins; subsequent writes are no-ops. Manually created tasks never have `run_outcome` set. |
 | 10 | Disabled schedules return `409 Conflict` (not `404`) on fire requests so callers can distinguish "paused" from "not found". |
+| 11 | On `Scheduler.Start`, schedules whose persisted due time (`NextRunAt` for recurring, `RunAt` for `@once`) is in the past trigger exactly one catch-up `fire`. Multiple missed slots collapse to a single run; `RunFire` then advances `NextRunAt` to resume normal cadence. |
 
 ---
 

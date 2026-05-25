@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/l-lab/cloud-agents/internal/db"
@@ -32,16 +33,53 @@ func NewScheduler(gormDB *gorm.DB, taskSvc TaskService) *Scheduler {
 }
 
 // Start loads all enabled schedules and begins the cron runner.
+//
+// For each schedule whose persisted next-fire time has already passed (e.g. the
+// process was down across that slot), Start launches a single catch-up fire so
+// missed runs are not silently dropped. Subsequent slots resume on the cron
+// timer. Catch-up uses the same RunFire path as a normal tick, so it inherits
+// the per-schedule Concurrency==0 skip-if-running guard.
 func (s *Scheduler) Start(ctx context.Context) {
 	var recs []db.ScheduledTask
 	if err := s.gormDB.WithContext(ctx).Where("enabled = ?", true).Find(&recs).Error; err != nil {
 		logger.Default().Error("schedule: load initial schedules", "err", err)
 	}
+	now := time.Now()
+	missed := 0
 	for _, rec := range recs {
 		s.register(rec)
+		if s.catchUpIfMissed(rec, now) {
+			missed++
+		}
 	}
 	s.c.Start()
-	logger.Default().Info("scheduler started", "schedules", len(recs))
+	logger.Default().Info("scheduler started", "schedules", len(recs), "catch_up", missed)
+}
+
+// catchUpIfMissed fires the schedule once if its persisted next-fire time has
+// passed. Returns true if a catch-up was launched.
+//
+// Recurring schedules use NextRunAt (written by RunFire after each tick).
+// One-shot schedules use RunAt directly — onceSpec.Next returns zero for past
+// times, so the cron runner would otherwise never trigger them after a restart.
+//
+// Only one catch-up is launched regardless of how many slots were missed: agent
+// runs are typically expensive and "today's data" oriented, so firing N times
+// in a burst would do more harm than good. RunFire updates NextRunAt to the
+// next future slot, so the cron timer resumes normal cadence.
+func (s *Scheduler) catchUpIfMissed(rec db.ScheduledTask, now time.Time) bool {
+	var due *time.Time
+	if rec.CronExpr == "@once" {
+		due = rec.RunAt
+	} else {
+		due = rec.NextRunAt
+	}
+	if due == nil || !due.Before(now) {
+		return false
+	}
+	logger.Default().Info("schedule: catching up missed run", "id", rec.ID, "expr", rec.CronExpr, "due_at", due)
+	go s.fire(rec.ID)
+	return true
 }
 
 // Stop gracefully shuts the cron runner.
