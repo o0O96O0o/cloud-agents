@@ -40,7 +40,7 @@ func RunFire(ctx context.Context, gormDB *gorm.DB, taskSvc TaskService, schedID 
 	if rec.Concurrency == 0 {
 		var count int64
 		gormDB.WithContext(ctx).Model(&db.Task{}).
-			Where("schedule_id = ? AND state NOT IN (?, ?)", schedID, int(task.StateError), int(task.StateNew)).
+			Where("schedule_id = ? AND state NOT IN (?, ?) AND (run_outcome = '' OR run_outcome IS NULL)", schedID, int(task.StateError), int(task.StateNew)).
 			Count(&count)
 		if count > 0 {
 			logger.Default().Info("schedule: skipping fire — previous run still active", "id", schedID)
