@@ -224,7 +224,8 @@ func (o onceSpec) Next(after time.Time) time.Time {
 ```
 1. Load db.ScheduledTask (must be enabled)
 2. If Concurrency == 0: count active tasks with this schedule_id
-      state NOT IN (StateError, StateNew) → count > 0 → return ("", nil) (skip)
+      state NOT IN (StateError, StateNew) AND (run_outcome = '' OR run_outcome IS NULL) → count > 0 → return ("", nil) (skip)
+      (tasks that have already set run_outcome are considered finished and do not block the new run)
 3. Load db.User by UserID to get username
 4. Unmarshal ExtraEnv JSON
 5. taskSvc.CreateTask(ctx, username, extraEnv, gitURL, schedID)
