@@ -92,7 +92,24 @@ Thin fetch wrappers. Base URL comes from `VITE_API_BASE` (defaults to `''`, so t
 
 `sendMessage` supports both JSON and multipart (when `files` are provided). It returns the raw `Response` for SSE streaming.
 
+`steerMessage` accepts an optional `priority` (`'now' | 'next' | 'later'`). `useChat` hardcodes `'now'` when routing steered messages from `sendMessage`.
+
 `getHistory` returns paginated results. Pass `cursor` from the previous page's `nextCursor` to fetch older entries.
+
+**`TaskSummary`** (returned by `listTasks`):
+
+| Field         | Type              | Description                                           |
+| ------------- | ----------------- | ----------------------------------------------------- |
+| `id`          | `string`          | Task UUID                                             |
+| `title`       | `string`          | Display title                                         |
+| `state`       | `string`          | Derived sandbox state label                           |
+| `git_url`     | `string?`         | Git repo URL if task was cloned from git              |
+| `error_msg`   | `string?`         | Error message when state is `error`                   |
+| `schedule_id` | `string?`         | UUID of the parent schedule (scheduled tasks only)    |
+| `created_at`  | `string`          | ISO 8601 timestamp                                    |
+| `updated_at`  | `string`          | ISO 8601 timestamp                                    |
+
+`schedule_id` is used by `HistorySidepanel` to show a calendar icon on schedule-triggered tasks (when `git_url` is not also set).
 
 **Resources**
 
