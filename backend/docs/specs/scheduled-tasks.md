@@ -224,7 +224,8 @@ func (o onceSpec) Next(after time.Time) time.Time {
 ```
 1. Load db.ScheduledTask (must be enabled)
 2. If Concurrency == 0: count active tasks with this schedule_id
-      state NOT IN (StateError, StateNew) → count > 0 → return ("", nil) (skip)
+      state NOT IN (StateError, StateNew) AND (run_outcome = '' OR run_outcome IS NULL)
+      → count > 0 → return ("", nil) (skip)
 3. Load db.User by UserID to get username
 4. Unmarshal ExtraEnv JSON
 5. taskSvc.CreateTask(ctx, username, extraEnv, gitURL, schedID)
@@ -541,7 +542,7 @@ Shows schedule metadata, "Run now" button (calls `runScheduleNow` → navigates 
 | 6 | `context.Background()` is used for the goroutine, not the fire-call context, so sandbox provisioning survives beyond the cron tick's goroutine lifetime. |
 | 7 | A schedule token is scoped to exactly one schedule. The fire endpoint verifies both the token hash and the schedule ID in the path. |
 | 8 | Raw tokens are never stored; only `sha256(token)` is persisted. Only one active token per schedule at a time — `GenerateToken` revokes any existing active token. |
-| 9 | `run_outcome` is write-once per task. The first terminal state (`completed`/`failed`/`timeout`) wins; subsequent writes are no-ops. Manually created tasks never have `run_outcome` set. |
+| 9 | `run_outcome` is write-once per task. The first terminal state (`completed`/`failed`/`timeout`) wins; subsequent writes are no-ops. Manually created tasks never have `run_outcome` set. Tasks with a non-empty `run_outcome` are excluded from the concurrency "still active" count (step 2 of `RunFire`) so completed runs don't block subsequent firings. |
 | 10 | Disabled schedules return `409 Conflict` (not `404`) on fire requests so callers can distinguish "paused" from "not found". |
 | 11 | On `Scheduler.Start`, schedules whose persisted due time (`NextRunAt` for recurring, `RunAt` for `@once`) is in the past trigger exactly one catch-up `fire`. Multiple missed slots collapse to a single run; `RunFire` then advances `NextRunAt` to resume normal cadence. |
 
