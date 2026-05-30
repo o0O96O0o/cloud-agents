@@ -156,7 +156,7 @@ OpenSandbox server (:8080)
 | `/login/sso` | `SSOCallbackPage` |
 | `/login/oidc` | `SSOCallbackPage` |
 
-**SSE flow:** `useChat.sendMessage` → creates task if needed → POST to backend → reads SSE body as stream via `parseSSE` async generator → dispatches events to update message state. `session.completed` (not `result`) is the terminal event that re-enables input. When an SSE stream is already open (`sending === true`), subsequent `sendMessage` calls are routed to `POST /api/tasks/:id/steer` instead (steering), which injects the prompt into the active agent run without opening a new stream.
+**SSE flow:** `useChat.sendMessage` → creates task if needed → POST to backend → reads SSE body as stream via `parseSSE` async generator → dispatches events to update message state. `session.completed` (not `result`) is the terminal event that re-enables input. When an SSE stream is already open (`sending === true`), subsequent `sendMessage` calls append the user message optimistically (status `'done'`) and then call `POST /api/tasks/:id/steer` with hardcoded priority `'now'` (steering), which injects the prompt into the active agent run without opening a new stream.
 
 **Key SSE events:** `session.init` (sets cwd, transitions sandbox to running), `message.assistant` (text delta + tool_use blocks), `message.user` (tool_result blocks — updates matching ToolUseBlock.result), `task.started` (appends ToolActivity), `task.progress` (updates last ToolActivity description + `lastToolName`), `permission.requested` (tool permission prompt), `question.asked` (AskUserQuestion prompt), `session.status` (sets message `status: 'done'` when payload status is `'idle'`), `result` (run complete), `session.completed` (terminal — clears sending, calls onSessionCompleted).
 
@@ -167,6 +167,8 @@ OpenSandbox server (:8080)
 **Subagent support:** `chainBuilder.ts` separates main-agent entries (`isSidechain: false`) from subagent entries (`isSidechain: true`), builds a `SubagentTrace` per subagent, and attaches it to the corresponding `Agent` tool-use block as `block.subagentTrace`. `ChatMessage.tsx` renders Agent tool-use blocks as `SubagentTraceCard` (violet-themed expandable card) rather than the generic `ToolUseCard` used for other tool calls.
 
 **Sidebar schedule icon:** Tasks with a `schedule_id` show a `<Calendar>` icon in `HistorySidepanel` — but only when `git_url` is not also set (git-cloned tasks use the git icon instead).
+
+**Agentation:** `App.tsx` mounts `<Agentation />` (from the `agentation` package, v3) at the root level outside the router. This is a headless overlay component for Claude Code agent UI integration.
 
 **Path alias:** `@/*` → `src/*`.
 

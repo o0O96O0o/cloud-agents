@@ -314,7 +314,7 @@ Deletes the schedule. Existing run tasks are **not** deleted.
 
 Toggles the `enabled` flag and re-registers or removes the cron entry.
 
-**Response** `200 scheduleResponse`.
+**Response** `204`.
 
 ### `POST /api/schedules/:id/run`
 

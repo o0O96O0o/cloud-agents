@@ -59,7 +59,7 @@ src/
 ├── types/
 │   └── session.ts               # typed SessionEntry union from claude-agent-sdk
 ├── types.ts                     # shared TypeScript types (Message, ToolUseBlock, …)
-├── App.tsx                      # router setup and route definitions
+├── App.tsx                      # router setup, route definitions, and Agentation mount
 ├── index.css                    # Tailwind import + Inter @theme
 └── main.tsx
 ```
@@ -167,7 +167,7 @@ const {
 
 ### `sendMessage` flow
 
-1. If `sending === true` (agent already running), routes directly to `steerMessage` and returns.
+1. If `sending === true` (agent already running), appends the user message optimistically with `status: 'done'`, then calls `steerMessage(taskId, prompt, 'now')` (priority is hardcoded to `'now'`) and returns. On error the optimistic message is marked `status: 'error'`.
 2. If `taskId` is null, calls `createTask(username)` and stores the id.
 3. Appends the user message and an empty assistant message (status `streaming`) to the list.
 4. Sets `sandboxState` to `provisioning` (backend may need to cold-start the sandbox).
@@ -228,6 +228,8 @@ Key types exported:
 | `/login`              | `LoginPage`                      | Public    |
 | `/login/sso`          | `SSOCallbackPage`                | Public    |
 | `/login/oidc`         | `SSOCallbackPage`                | Public    |
+
+`App.tsx` also mounts `<Agentation />` (from the `agentation` package, v3) outside the router at the root level. This is a headless overlay component for the Claude Code agent UI integration.
 
 ## Components
 
